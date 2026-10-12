@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -117,7 +118,15 @@ def serialize_user(user: dict) -> dict:
     }
 
 
+logger = logging.getLogger(__name__)
+
+
 def set_session_cookie(response: Response, token: str) -> None:
+    is_cross_origin = settings.COOKIE_SAMESITE == "none"
+    logger.info(
+        "Setting session cookie: secure=%s, samesite=%s, partitioned=%s",
+        settings.COOKIE_SECURE, settings.COOKIE_SAMESITE, is_cross_origin,
+    )
     response.set_cookie(
         key=settings.SESSION_COOKIE_NAME,
         value=token,
@@ -126,10 +135,12 @@ def set_session_cookie(response: Response, token: str) -> None:
         secure=settings.COOKIE_SECURE,
         samesite=settings.COOKIE_SAMESITE,
         path="/",
+        partitioned=is_cross_origin,
     )
 
 
 def set_csrf_cookie(response: Response, token: str) -> None:
+    is_cross_origin = settings.COOKIE_SAMESITE == "none"
     response.set_cookie(
         key=settings.CSRF_COOKIE_NAME,
         value=token,
@@ -138,4 +149,5 @@ def set_csrf_cookie(response: Response, token: str) -> None:
         secure=settings.COOKIE_SECURE,
         samesite=settings.COOKIE_SAMESITE,
         path="/",
+        partitioned=is_cross_origin,
     )

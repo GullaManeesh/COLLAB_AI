@@ -81,5 +81,18 @@ async def logout(
                 status_code=503,
                 detail="Authentication storage is temporarily unavailable",
             ) from exc
-    response.delete_cookie(settings.SESSION_COOKIE_NAME, path="/")
-    response.delete_cookie(settings.CSRF_COOKIE_NAME, path="/")
+    is_cross_origin = settings.COOKIE_SAMESITE == "none"
+    response.delete_cookie(
+        settings.SESSION_COOKIE_NAME,
+        path="/",
+        secure=settings.COOKIE_SECURE,
+        samesite=settings.COOKIE_SAMESITE,
+        partitioned=is_cross_origin,
+    )
+    response.delete_cookie(
+        settings.CSRF_COOKIE_NAME,
+        path="/",
+        secure=settings.COOKIE_SECURE,
+        samesite=settings.COOKIE_SAMESITE,
+        partitioned=is_cross_origin,
+    )

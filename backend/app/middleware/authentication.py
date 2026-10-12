@@ -1,13 +1,18 @@
 from typing import Annotated
 
-from fastapi import Cookie, Depends, HTTPException
+import logging
+
+from fastapi import Cookie, Depends, HTTPException, Request
 from pymongo.errors import PyMongoError
 
 from app.config.settings import settings
 from app.services.auth_service import get_user_from_session_token
 
+logger = logging.getLogger(__name__)
+
 
 async def get_current_user(
+    request: Request,
     session_cookie: str | None = Cookie(default=None, alias=settings.SESSION_COOKIE_NAME),
 ) -> dict:
     """Reusable FastAPI authentication dependency equivalent to Express protect middleware.
@@ -21,6 +26,13 @@ async def get_current_user(
     7. Raises 503 if MongoDB storage is unavailable.
     8. Returns the authenticated user document.
     """
+    logger.info(
+        "[AUTH] Cookie check - cookie_name=%s, has_cookie=%s, origin=%s, all_cookies=%s",
+        settings.SESSION_COOKIE_NAME,
+        session_cookie is not None,
+        request.headers.get("origin", "N/A"),
+        list(request.cookies.keys()),
+    )
     if not session_cookie:
         raise HTTPException(status_code=401, detail="Authentication required")
 
