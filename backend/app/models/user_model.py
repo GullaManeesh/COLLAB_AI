@@ -38,6 +38,7 @@ class UsernameRequest(BaseModel):
 class AuthResponse(BaseModel):
     user: PublicUser
     needs_username: bool
+    csrf_token: str | None = None
 
 
 class UserResponse(BaseModel):

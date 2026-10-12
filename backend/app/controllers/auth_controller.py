@@ -39,16 +39,22 @@ async def google_login(payload: GoogleTokenRequest, response: Response) -> AuthR
         ) from exc
 
     auth_service.set_session_cookie(response, session_token)
-    auth_service.set_csrf_cookie(response, secrets.token_urlsafe(32))
-    return _auth_response(user)
+    csrf_token = secrets.token_urlsafe(32)
+    auth_service.set_csrf_cookie(response, csrf_token)
+    result = _auth_response(user)
+    result.csrf_token = csrf_token
+    return result
 
 
 async def current_user(
     response: Response,
     user: dict,
 ) -> AuthResponse:
-    auth_service.set_csrf_cookie(response, secrets.token_urlsafe(32))
-    return _auth_response(user)
+    csrf_token = secrets.token_urlsafe(32)
+    auth_service.set_csrf_cookie(response, csrf_token)
+    result = _auth_response(user)
+    result.csrf_token = csrf_token
+    return result
 
 
 async def save_username(
