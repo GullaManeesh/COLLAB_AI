@@ -12,5 +12,4 @@ aiosmtplib
 python-multipart
 pypdf
 python-docx
-sentence-transformers
 langchain-text-splitters
