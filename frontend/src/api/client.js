@@ -1,46 +1,42 @@
-import axios from 'axios'
+﻿import axios from 'axios'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
+const csrfCookieName = import.meta.env.VITE_CSRF_COOKIE_NAME || 'collabai_csrf'
 
-const client = axios.create({
-  baseURL: API_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
+const api = axios.create({
+    baseURL: import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000',
+    headers: {
+        'Content-Type': 'application/json',
+    },
+    timeout: 300000,
+    withCredentials: true,
 })
 
-// Request interceptor to inject JWT token
-client.interceptors.request.use(
-  (config) => {
-    const token = localStorage.getItem('token')
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`
+api.interceptors.request.use((config) => {
+    config.withCredentials = true
+    const csrfToken = document.cookie
+        .split('; ')
+        .find((cookie) => cookie.startsWith(`${csrfCookieName}=`))
+        ?.split('=')[1]
+    if (csrfToken && ['post', 'put', 'patch', 'delete'].includes(config.method?.toLowerCase())) {
+        config.headers['X-CSRF-Token'] = decodeURIComponent(csrfToken)
     }
     return config
-  },
-  (error) => {
-    return Promise.reject(error)
-  }
+})
+
+api.interceptors.response.use(
+    (response) => response,
+    (error) => {
+        const requestUrl = error.config?.url || ''
+        const isAuthEndpoint = requestUrl.startsWith('/auth/')
+        const isUnauthorized = error.response?.status === 401
+        const isPublicPage = ['/login', '/register', '/signup'].includes(window.location.pathname)
+
+        if (isUnauthorized && !isAuthEndpoint && !isPublicPage) {
+            window.location.assign('/login')
+        }
+
+        return Promise.reject(error)
+    },
 )
 
-// Response interceptor to handle 401 errors
-client.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response && error.response.status === 401) {
-      logger_clear_token()
-    }
-    return Promise.reject(error)
-  }
-)
-
-function logger_clear_token() {
-  localStorage.removeItem('token')
-  localStorage.removeItem('user')
-  // Redirect to login only if not already on the login or register page
-  if (window.location.pathname !== '/login' && window.location.pathname !== '/register') {
-    window.location.href = '/login'
-  }
-}
-
-export default client
+export default api

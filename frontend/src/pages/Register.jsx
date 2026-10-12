@@ -1,10 +1,8 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { useAuth } from '../context/AuthContext'
 import { Layers, Mail, Lock, User, AlertCircle } from 'lucide-react'
 
 const Register = () => {
-  const { register, token } = useAuth()
   const navigate = useNavigate()
 
   const [name, setName] = useState('')
@@ -13,15 +11,9 @@ const Register = () => {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
-  useEffect(() => {
-    if (token) {
-      navigate('/workspaces')
-    }
-  }, [token, navigate])
-
-  const handleSubmit = async (e) => {
+  const handleSubmit = (e) => {
     e.preventDefault()
-    if (password.length < 8) {
+    if (password.length > 0 && password.length < 8) {
       setError('Password must be at least 8 characters long.')
       return
     }
@@ -29,16 +21,10 @@ const Register = () => {
     setLoading(true)
     setError(null)
 
-    try {
-      await register(name, email, password)
-      navigate('/workspaces')
-    } catch (err) {
-      setError(
-        err.response?.data?.detail || 'Registration failed. Email might already be taken.'
-      )
-    } finally {
+    setTimeout(() => {
       setLoading(false)
-    }
+      navigate('/workspaces')
+    }, 400)
   }
 
   return (
@@ -46,11 +32,11 @@ const Register = () => {
       <div className="w-full max-w-md bg-white border border-[#E4E4E0] rounded-2xl p-5 sm:p-8 shadow-xl">
         {/* Brand Header */}
         <div className="flex flex-col items-center mb-8">
-          <div className="w-11 h-11 rounded-xl bg-[#18181B] flex items-center justify-center text-white mb-3 shadow-xs">
+          <div className="w-11 h-11 rounded-xl bg-[#18181B] text-white border border-[#18181B] flex items-center justify-center mb-3 shadow-xs">
             <Layers className="w-5 h-5" />
           </div>
           <h2 className="font-display font-bold text-2xl text-[#18181B] tracking-tight">Create your account</h2>
-          <p className="text-[#71717A] text-xs mt-1">Get started with an intelligent team workspace</p>
+          <p className="text-[#52525B] text-xs mt-1">Get started with an intelligent team workspace</p>
         </div>
 
         {error && (
@@ -110,7 +96,7 @@ const Register = () => {
           <button 
             type="submit" 
             disabled={loading}
-            className="w-full btn-primary py-2.5 text-sm mt-2"
+            className="w-full btn-primary py-2.5 text-sm mt-2 cursor-pointer"
           >
             {loading ? (
               <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
@@ -121,7 +107,7 @@ const Register = () => {
         </form>
 
         {/* Login link */}
-        <div className="mt-6 text-center text-xs text-[#71717A]">
+        <div className="mt-6 text-center text-xs text-[#52525B]">
           Already have an account?{' '}
           <Link to="/login" className="text-[#18181B] font-semibold underline underline-offset-2 hover:text-[#52525B]">
             Sign in

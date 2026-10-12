@@ -1,17 +1,51 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { Plus, X, Bot, AlertCircle, Calendar, ArrowRight, ArrowLeft, Trash2, CheckCircle, Clock, CheckSquare } from 'lucide-react'
-import client from '../api/client'
-import { useWorkspace } from '../context/WorkspaceContext'
-import { format } from 'date-fns'
+import { Plus, X, Bot, Calendar, ArrowRight, ArrowLeft, Trash2, CheckSquare } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
+
+const initialTasks = [
+  {
+    id: 't-1',
+    title: 'Implement WebSocket Auth & Handshake Middleware',
+    description: 'Enforce HMAC token verification and client-side heartbeat pong response handling.',
+    status: 'todo',
+    priority: 'high',
+    created_by: 'agent-planner',
+    due_date: new Date(Date.now() + 172800000).toISOString()
+  },
+  {
+    id: 't-2',
+    title: 'Vector RAG Document Chunking Pipeline',
+    description: 'Configure sliding window sentence splitter for PDF and Markdown files.',
+    status: 'in_progress',
+    priority: 'high',
+    created_by: 'user',
+    due_date: new Date(Date.now() + 259200000).toISOString()
+  },
+  {
+    id: 't-3',
+    title: 'Critic Validation Rule Engine Setup',
+    description: 'Inspect generated agent markdown for source hallucination & citation validity.',
+    status: 'in_progress',
+    priority: 'medium',
+    created_by: 'agent-planner',
+    due_date: new Date(Date.now() + 432000000).toISOString()
+  },
+  {
+    id: 't-4',
+    title: 'Team Member Permission & Invite System',
+    description: 'Workspace owner role checks and teammate email invitations.',
+    status: 'done',
+    priority: 'low',
+    created_by: 'user',
+    due_date: new Date(Date.now() - 86400000).toISOString()
+  }
+]
 
 const Tasks = () => {
   const { id } = useParams()
-  const { workspace, refreshStats } = useWorkspace()
   
-  const [tasks, setTasks] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [tasks, setTasks] = useState(initialTasks)
   const [showModal, setShowModal] = useState(false)
   
   const [title, setTitle] = useState('')
@@ -19,73 +53,39 @@ const Tasks = () => {
   const [priority, setPriority] = useState('medium')
   const [dueDate, setDueDate] = useState('')
   const [creating, setCreating] = useState(false)
-  const [error, setError] = useState(null)
 
-  const fetchTasks = useCallback(async () => {
-    setLoading(true)
-    try {
-      const response = await client.get(`/tasks/${id}`)
-      setTasks(response.data)
-    } catch (err) {
-      console.error("Failed to load tasks", err)
-    } finally {
-      setLoading(false)
-    }
-  }, [id])
-
-  useEffect(() => {
-    fetchTasks()
-  }, [fetchTasks])
-
-  const handleCreate = async (e) => {
+  const handleCreate = (e) => {
     e.preventDefault()
     if (!title.trim()) return
 
     setCreating(true)
-    setError(null)
-    try {
-      const payload = {
+    setTimeout(() => {
+      const newTask = {
+        id: `t-${Date.now()}`,
         title: title.trim(),
         description: description.trim(),
+        status: 'todo',
         priority: priority,
+        created_by: 'user',
         due_date: dueDate ? new Date(dueDate).toISOString() : null
       }
       
-      await client.post(`/tasks/${id}`, payload)
+      setTasks(prev => [...prev, newTask])
       setShowModal(false)
       setTitle('')
       setDescription('')
       setPriority('medium')
       setDueDate('')
-      fetchTasks()
-      refreshStats()
-    } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to create task.')
-    } finally {
       setCreating(false)
-    }
+    }, 300)
   }
 
-  const moveTaskStatus = async (taskId, newStatus) => {
-    try {
-      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: newStatus } : t))
-      await client.patch(`/tasks/${id}/${taskId}`, { status: newStatus })
-      refreshStats()
-    } catch (err) {
-      console.error("Failed to update task status", err)
-      fetchTasks()
-    }
+  const moveTaskStatus = (taskId, newStatus) => {
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: newStatus } : t))
   }
 
-  const handleDelete = async (taskId) => {
-    if (!window.confirm("Delete this task?")) return
-    try {
-      await client.delete(`/tasks/${id}/${taskId}`)
-      setTasks(prev => prev.filter(t => t.id !== taskId))
-      refreshStats()
-    } catch (err) {
-      console.error("Failed to delete task", err)
-    }
+  const handleDelete = (taskId) => {
+    setTasks(prev => prev.filter(t => t.id !== taskId))
   }
 
   const handleDragStart = (e, taskId) => {
@@ -135,7 +135,7 @@ const Tasks = () => {
   }
 
   return (
-    <div className="absolute inset-0 flex flex-col bg-[#F8F8F6] text-[#18181B] h-full p-4 sm:p-8 overflow-y-auto select-none">
+    <div className="absolute inset-0 flex flex-col bg-[#F8F8F6] text-[#18181B] h-full p-4 sm:p-6 lg:p-8 overflow-y-auto select-none">
       {/* Header */}
       <div className="flex items-center justify-between mb-6 shrink-0">
         <div>
@@ -145,24 +145,15 @@ const Tasks = () => {
         
         <button 
           onClick={() => setShowModal(true)}
-          className="btn-primary flex items-center space-x-1.5"
+          className="btn-primary flex items-center space-x-1.5 cursor-pointer text-xs sm:text-sm"
         >
           <Plus className="w-4 h-4" />
           <span>New Task</span>
         </button>
       </div>
 
-      {/* Loading Skeletons */}
-      {loading ? (
-        <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-5 h-full overflow-hidden">
-          {[1, 2, 3].map(n => (
-            <div key={n} className="bg-[#F4F4F2]/60 border border-[#E4E4E0] rounded-2xl p-4 space-y-4 animate-pulse">
-              <div className="h-5 w-24 bg-[#E4E4E0] rounded-md"></div>
-              <div className="h-24 bg-white rounded-xl border border-[#E4E4E0] shadow-xs"></div>
-            </div>
-          ))}
-        </div>
-      ) : tasks.length === 0 ? (
+      {/* Kanban Board */}
+      {tasks.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center text-center p-8 bg-white border border-[#E4E4E0] rounded-2xl shadow-xs max-w-xl mx-auto my-auto">
           <div className="w-12 h-12 rounded-2xl bg-[#F4F4F2] flex items-center justify-center text-[#71717A] mb-4">
             <CheckSquare className="w-6 h-6" />
@@ -189,8 +180,8 @@ const Tasks = () => {
           </div>
         </div>
       ) : (
-        /* Kanban Columns */
-        <div className="flex-grow grid grid-cols-1 md:grid-cols-3 gap-5 min-h-[28rem] md:min-h-0 overflow-visible md:overflow-hidden h-full">
+        /* Kanban Columns Grid */
+        <div className="flex-grow grid grid-cols-1 md:grid-cols-3 gap-5 min-h-[28rem] md:min-h-0 h-full overflow-y-auto md:overflow-hidden">
           {columns.map((col) => {
             const colTasks = getTasksForColumn(col.id)
             return (
@@ -198,7 +189,7 @@ const Tasks = () => {
                 key={col.id} 
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={(e) => handleDrop(e, col.id)}
-                className="bg-[#F4F4F2]/50 border border-[#E4E4E0] rounded-2xl flex flex-col h-full overflow-hidden"
+                className="bg-[#F4F4F2]/50 border border-[#E4E4E0] rounded-2xl flex flex-col h-full overflow-hidden min-h-[300px]"
               >
                 {/* Column header */}
                 <div className="p-3.5 px-4 bg-white border-b border-[#E4E4E0] flex items-center justify-between shrink-0">
@@ -215,7 +206,7 @@ const Tasks = () => {
                 <div className="flex-1 overflow-y-auto p-3 space-y-3">
                   {colTasks.map((task) => {
                     const isAgent = task.created_by?.startsWith('agent')
-                    const dateFormatted = task.due_date ? format(new Date(task.due_date), 'dd MMM') : null
+                    const dateFormatted = task.due_date ? new Date(task.due_date).toLocaleDateString([], { month: 'short', day: 'numeric' }) : null
                     
                     return (
                       <div
@@ -230,7 +221,7 @@ const Tasks = () => {
                           </h4>
                           <button 
                             onClick={() => handleDelete(task.id)}
-                            className="text-[#A1A1AA] hover:text-[#DC2626] p-1 rounded hover:bg-[#FEF2F2] transition-colors shrink-0"
+                            className="text-[#A1A1AA] hover:text-[#DC2626] p-1 rounded hover:bg-[#FEF2F2] transition-colors shrink-0 cursor-pointer"
                             title="Delete Task"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -268,7 +259,7 @@ const Tasks = () => {
                             {col.id !== 'todo' && (
                               <button 
                                 onClick={() => moveTaskStatus(task.id, col.id === 'done' ? 'in_progress' : 'todo')}
-                                className="p-1 bg-[#F8F8F6] border border-[#E4E4E0] hover:bg-[#E4E4E0] rounded text-[#71717A] hover:text-[#18181B] transition-colors"
+                                className="p-1 bg-[#F8F8F6] border border-[#E4E4E0] hover:bg-[#E7F0E9] hover:text-[#365742] rounded transition-colors cursor-pointer"
                                 title="Move left"
                               >
                                 <ArrowLeft className="w-3 h-3" />
@@ -277,7 +268,7 @@ const Tasks = () => {
                             {col.id !== 'done' && (
                               <button 
                                 onClick={() => moveTaskStatus(task.id, col.id === 'todo' ? 'in_progress' : 'done')}
-                                className="p-1 bg-[#F8F8F6] border border-[#E4E4E0] hover:bg-[#E4E4E0] rounded text-[#71717A] hover:text-[#18181B] transition-colors"
+                                className="p-1 bg-[#F8F8F6] border border-[#E4E4E0] hover:bg-[#E7F0E9] hover:text-[#365742] rounded transition-colors cursor-pointer"
                                 title="Move right"
                               >
                                 <ArrowRight className="w-3 h-3" />
@@ -313,19 +304,13 @@ const Tasks = () => {
             >
               <button 
                 onClick={() => setShowModal(false)}
-                className="absolute right-5 top-5 text-[#71717A] hover:text-[#18181B] p-1 rounded-lg hover:bg-[#F4F4F2] transition-colors"
+                className="absolute right-5 top-5 text-[#71717A] hover:text-[#18181B] p-1 rounded-lg hover:bg-[#F4F4F2] transition-colors cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
 
               <h3 className="font-display font-bold text-lg text-[#18181B] tracking-tight mb-1">Create Task</h3>
               <p className="text-[#71717A] text-xs mb-5">Add a new deliverable to the workspace board.</p>
-
-              {error && (
-                <div className="mb-4 p-3 bg-[#FEF2F2] border border-[#FEE2E2] text-[#991B1B] text-xs rounded-xl">
-                  {error}
-                </div>
-              )}
 
               <form onSubmit={handleCreate} className="space-y-4">
                 <div className="space-y-1.5">

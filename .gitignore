@@ -1,14 +1,19 @@
-.env
-.env.*
-!.env.example
-
+# Backend
+backend/.env
 backend/.venv/
-backend/venv/
-__pycache__/
-*.py[cod]
+backend/__pycache__/
+backend/**/__pycache__/
+backend/*.py[cod]
+backend/.pytest_cache/
+backend/storage/
+backend/app.zip
 
+# Frontend
 frontend/node_modules/
 frontend/dist/
+frontend/.env.local
+frontend/.env.production
 
-backend/storage/
+# OS
 .DS_Store
+Thumbs.db

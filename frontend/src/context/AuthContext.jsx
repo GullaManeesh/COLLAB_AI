@@ -1,74 +1,41 @@
-import React, { createContext, useState, useEffect, useContext } from 'react'
-import client from '../api/client'
+﻿import React, { createContext, useContext, useEffect, useState } from 'react'
+import api from '../api/client'
 
 const AuthContext = createContext(null)
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null)
-  const [token, setToken] = useState(localStorage.getItem('token') || null)
   const [loading, setLoading] = useState(true)
+  const [needsUsername, setNeedsUsername] = useState(false)
+
+  const refreshUser = async () => {
+    try {
+      const response = await api.get('/auth/me')
+      setUser(response.data.user)
+      setNeedsUsername(response.data.needs_username)
+      return response.data
+    } catch (error) {
+      if (error.response?.status !== 401) {
+        console.error('Failed to restore authentication session', error)
+      }
+      setUser(null)
+      setNeedsUsername(false)
+      return null
+    }
+  }
 
   useEffect(() => {
-    const initAuth = async () => {
-      const storedToken = localStorage.getItem('token')
-      if (storedToken) {
-        try {
-          // Fetch current user from API
-          const response = await client.get('/auth/me')
-          setUser(response.data)
-        } catch (error) {
-          console.error("Auth validation failed", error)
-          logout()
-        }
-      }
-      setLoading(false)
-    }
-    initAuth()
-  }, [token])
+    refreshUser().finally(() => setLoading(false))
+  }, [])
 
-  const login = async (email, password) => {
-    try {
-      const response = await client.post('/auth/login', { email, password })
-      const { token: jwtToken, user: userData } = response.data
-      
-      localStorage.setItem('token', jwtToken)
-      localStorage.setItem('user', JSON.stringify(userData))
-      
-      setToken(jwtToken)
-      setUser(userData)
-      return userData
-    } catch (error) {
-      console.error("Login failed context", error)
-      throw error
-    }
-  }
-
-  const register = async (name, email, password) => {
-    try {
-      const response = await client.post('/auth/register', { name, email, password })
-      const { token: jwtToken, user: userData } = response.data
-      
-      localStorage.setItem('token', jwtToken)
-      localStorage.setItem('user', JSON.stringify(userData))
-      
-      setToken(jwtToken)
-      setUser(userData)
-      return userData
-    } catch (error) {
-      console.error("Registration failed context", error)
-      throw error
-    }
-  }
-
-  const logout = () => {
-    localStorage.removeItem('token')
-    localStorage.removeItem('user')
-    setToken(null)
+  const logout = async () => {
+    await api.post('/auth/logout')
     setUser(null)
+    setNeedsUsername(false)
   }
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, register, logout }}>
+    <AuthContext.Provider value={{ user, loading, needsUsername, refreshUser, logout }}>
       {children}
     </AuthContext.Provider>
   )
@@ -77,7 +44,7 @@ export const AuthProvider = ({ children }) => {
 export const useAuth = () => {
   const context = useContext(AuthContext)
   if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider')
+    throw new Error('useAuth must be used within AuthProvider')
   }
   return context
 }
