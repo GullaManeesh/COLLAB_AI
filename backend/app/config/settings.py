@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = ""
     SMTP_FROM_EMAIL: str = ""
     SMTP_USE_TLS: bool = True
+    EMAIL_PROVIDER: str = "smtp"
+    RESEND_API_KEY: str = ""
+    RESEND_FROM_EMAIL: str = ""
 
     model_config = SettingsConfigDict(
         env_file=Path(__file__).resolve().parents[2] / ".env",

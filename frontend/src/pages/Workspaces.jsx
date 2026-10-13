@@ -170,7 +170,7 @@ const Workspaces = () => {
       setSubmitError('')
       const invitationResults = response?.data?.invitation_results || []
       const notCreated = invitationResults.filter((item) => item.status !== 'pending').length
-      const emailFailed = invitationResults.filter((item) => item.status === 'pending' && item.email_status !== 'accepted_by_smtp').length
+      const emailFailed = invitationResults.filter((item) => item.status === 'pending' && !['accepted_by_smtp', 'accepted_by_provider'].includes(item.email_status)).length
       showToast(notCreated || emailFailed
         ? `Workspace created. ${notCreated} invitation(s) not created; ${emailFailed} email(s) failed.`
         : `Created workspace "${name}"`)

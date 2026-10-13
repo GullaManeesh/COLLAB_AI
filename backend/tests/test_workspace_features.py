@@ -190,6 +190,8 @@ class InvitationAndNotificationUnitTests(unittest.TestCase):
     def setUp(self):
         self.owner_id = ObjectId()
         self.owner = {"_id": self.owner_id, "email": "owner@collabai.com", "name": "Owner"}
+        self.user_id = self.owner_id
+        self.user = self.owner
         self.recipient_id = ObjectId()
         self.recipient = {"_id": self.recipient_id, "email": "invitee@collabai.com", "name": "Invitee"}
         self.ws_id = ObjectId()
@@ -203,14 +205,61 @@ class InvitationAndNotificationUnitTests(unittest.TestCase):
         mock_db.invitations.insert_one = AsyncMock(return_value=SimpleNamespace(inserted_id=inv_id))
         mock_db.notifications.insert_one = AsyncMock()
         mock_db.email_outbox.insert_one = AsyncMock(return_value=SimpleNamespace(inserted_id=ObjectId()))
-        mock_db.email_outbox.update_one = AsyncMock()
+        mock_db.email_outbox.update_one = AsyncMock(return_value=SimpleNamespace(modified_count=1))
 
         with patch("app.services.invitation_service.get_database", return_value=mock_db), \
-             patch("app.services.invitation_service.send_email", new=AsyncMock(return_value=True)):
+             patch("app.services.invitation_service.send_email", new=AsyncMock(return_value={"provider": "smtp", "status": "accepted_by_smtp", "message_id": None})):
             res = asyncio.run(invitation_service.invite_teammate(str(self.ws_id), "invitee@collabai.com", self.owner))
 
         self.assertEqual(res["status"], "pending")
+        self.assertEqual(res["email_status"], "accepted_by_smtp")
         mock_db.notifications.insert_one.assert_awaited_once()
+
+    def test_resend_provider_uses_https_api_and_idempotency_key(self):
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {"id": "resend-message-id"}
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=None)
+        client.post = AsyncMock(return_value=response)
+
+        with patch.object(email_service.settings, "EMAIL_PROVIDER", "resend"), \
+             patch.object(email_service.settings, "RESEND_API_KEY", "test-api-key"), \
+             patch.object(email_service.settings, "RESEND_FROM_EMAIL", "CollabAI <noreply@example.com>"), \
+             patch("app.services.email_service.httpx.AsyncClient", return_value=client):
+            result = asyncio.run(email_service.send_email(
+                "invitee@example.com", "Invite", "Join us", idempotency_key="outbox-123"
+            ))
+
+        self.assertEqual(result, {
+            "provider": "resend", "status": "accepted_by_provider", "message_id": "resend-message-id"
+        })
+        self.assertEqual(client.post.call_args.kwargs["headers"]["Idempotency-Key"], "outbox-123")
+
+    def test_failed_pending_invitation_retries_existing_outbox(self):
+        invitation_id = ObjectId()
+        outbox_id = ObjectId()
+        mock_db = MagicMock()
+        mock_db.workspaces.find_one = AsyncMock(return_value={"_id": self.ws_id, "name": "AI Lab", "owner_id": self.owner_id, "members": []})
+        mock_db.users.find_one = AsyncMock(return_value=self.recipient)
+        mock_db.invitations.find_one = AsyncMock(return_value={"_id": invitation_id, "status": "pending"})
+        mock_db.email_outbox.find_one = AsyncMock(return_value={
+            "_id": outbox_id, "invitation_id": invitation_id, "to": self.recipient["email"],
+            "subject": "Invite", "body": "Join", "status": "failed",
+        })
+        mock_db.email_outbox.update_one = AsyncMock(return_value=SimpleNamespace(modified_count=1))
+
+        with patch("app.services.invitation_service.get_database", return_value=mock_db), \
+             patch("app.services.invitation_service.send_email", new=AsyncMock(return_value={
+                 "provider": "resend", "status": "accepted_by_provider", "message_id": "msg-1"
+             })) as sender:
+            result = asyncio.run(invitation_service.invite_teammate(str(self.ws_id), self.recipient["email"], self.owner))
+
+        self.assertEqual(result["email_status"], "accepted_by_provider")
+        sender.assert_awaited_once()
+        mock_db.invitations.insert_one.assert_not_called()
+        mock_db.email_outbox.update_one.assert_awaited()
 
     def test_invitation_smtp_failure_is_recorded_without_losing_invitation(self):
         mock_db = MagicMock()
@@ -221,7 +270,7 @@ class InvitationAndNotificationUnitTests(unittest.TestCase):
         mock_db.notifications.insert_one = AsyncMock()
         outbox_id = ObjectId()
         mock_db.email_outbox.insert_one = AsyncMock(return_value=SimpleNamespace(inserted_id=outbox_id))
-        mock_db.email_outbox.update_one = AsyncMock()
+        mock_db.email_outbox.update_one = AsyncMock(return_value=SimpleNamespace(modified_count=1))
 
         with patch("app.services.invitation_service.get_database", return_value=mock_db), \
              patch("app.services.invitation_service.send_email", new=AsyncMock(side_effect=RuntimeError("SMTP unavailable"))):
@@ -230,8 +279,9 @@ class InvitationAndNotificationUnitTests(unittest.TestCase):
         self.assertEqual(result["status"], "pending")
         self.assertEqual(result["email_status"], "failed")
         mock_db.invitations.insert_one.assert_awaited_once()
+        self.assertEqual(mock_db.email_outbox.update_one.await_count, 2)
         update = mock_db.email_outbox.update_one.call_args
-        self.assertEqual(update.args[0], {"_id": outbox_id})
+        self.assertEqual(update.args[0], {"_id": outbox_id, "status": "sending"})
         self.assertEqual(update.args[1]["$set"]["status"], "failed")
 
     def test_create_workspace_invites_each_initial_member_and_returns_outcomes(self):
@@ -288,6 +338,7 @@ class InvitationAndNotificationUnitTests(unittest.TestCase):
         mock_db.workspaces.find_one = AsyncMock(return_value={"_id": self.ws_id, "name": "AI Lab", "owner_id": self.owner_id, "members": []})
         mock_db.users.find_one = AsyncMock(return_value=self.recipient)
         mock_db.invitations.find_one = AsyncMock(return_value={"_id": ObjectId(), "status": "pending"})
+        mock_db.email_outbox.find_one = AsyncMock(return_value=None)
 
         with patch("app.services.invitation_service.get_database", return_value=mock_db):
             with self.assertRaises(HTTPException) as exc:

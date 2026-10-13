@@ -12,6 +12,58 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+async def _deliver_email_outbox(db, outbox: dict) -> str:
+    """Claim one pending/failed outbox row and perform a single provider attempt."""
+    now = datetime.now(timezone.utc)
+    claim = await db.email_outbox.update_one(
+        {"_id": outbox["_id"], "status": {"$in": ["pending", "failed"]}},
+        {"$set": {"status": "sending", "last_attempt_at": now}, "$inc": {"attempts": 1}},
+    )
+    if getattr(claim, "modified_count", 0) != 1:
+        return "sending"
+
+    try:
+        delivery = await send_email(
+            outbox["to"], outbox["subject"], outbox["body"],
+            idempotency_key=str(outbox["_id"]),
+        )
+    except Exception as exc:
+        safe_message = str(exc)
+        for secret in (settings.SMTP_PASSWORD, settings.RESEND_API_KEY):
+            if secret:
+                safe_message = safe_message.replace(secret, "[redacted]")
+        safe_error = f"{type(exc).__name__}: {safe_message[:400]}"
+        logger.error(
+            "Invitation email failed invitation_id=%s recipient=%s error=%s",
+            outbox.get("invitation_id"), outbox.get("to"), safe_error,
+        )
+        await db.email_outbox.update_one(
+            {"_id": outbox["_id"], "status": "sending"},
+            {"$set": {"status": "failed", "error": safe_error}},
+        )
+        return "failed"
+
+    try:
+        await db.email_outbox.update_one(
+            {"_id": outbox["_id"], "status": "sending"},
+            {
+                "$set": {
+                    "status": delivery["status"],
+                    "provider": delivery["provider"],
+                    "provider_message_id": delivery.get("message_id"),
+                    "accepted_at": datetime.now(timezone.utc),
+                },
+                "$unset": {"error": ""},
+            },
+        )
+    except Exception:
+        logger.exception(
+            "Provider accepted invitation email, but outbox status update failed invitation_id=%s",
+            outbox.get("invitation_id"),
+        )
+    return delivery["status"]
+
+
 async def invite_teammate(workspace_id: str, email: str, user: dict) -> dict:
     db = get_database()
 
@@ -52,6 +104,18 @@ async def invite_teammate(workspace_id: str, email: str, user: dict) -> dict:
         "status": "pending",
     })
     if existing:
+        failed_outbox = await db.email_outbox.find_one({
+            "invitation_id": existing["_id"],
+            "status": "failed",
+        })
+        if failed_outbox:
+            delivery_status = await _deliver_email_outbox(db, failed_outbox)
+            return {
+                "message": "Pending invitation email retried",
+                "invitation_id": str(existing["_id"]),
+                "status": "pending",
+                "email_status": delivery_status,
+            }
         raise HTTPException(status_code=409, detail="Invitation is already pending")
 
     now = datetime.now(timezone.utc)
@@ -120,31 +184,14 @@ async def invite_teammate(workspace_id: str, email: str, user: dict) -> dict:
         "created_at": now,
     })
 
-    delivery_status = "failed"
-    try:
-        await send_email(
-            invitation["recipient_email"],
-            email_subject,
-            email_body,
-        )
-    except Exception as exc:
-        error_message = str(exc).replace(settings.SMTP_PASSWORD, "[redacted]") if settings.SMTP_PASSWORD else str(exc)
-        safe_error = f"{type(exc).__name__}: {error_message[:400]}"
-        logger.error("Invitation email failed invitation_id=%s recipient=%s error=%s", result.inserted_id, email, safe_error)
-        await db.email_outbox.update_one(
-            {"_id": email_result.inserted_id},
-            {"$set": {"status": "failed", "error": safe_error, "last_attempt_at": datetime.now(timezone.utc)}, "$inc": {"attempts": 1}},
-        )
-    else:
-        delivery_status = "accepted_by_smtp"
-        try:
-            await db.email_outbox.update_one(
-                {"_id": email_result.inserted_id},
-                {"$set": {"status": delivery_status, "accepted_at": datetime.now(timezone.utc)}, "$inc": {"attempts": 1}},
-            )
-        except Exception:
-            # Do not mislabel SMTP acceptance as a delivery failure if only the status write failed.
-            logger.exception("SMTP accepted invitation email, but outbox status update failed invitation_id=%s", result.inserted_id)
+    delivery_status = await _deliver_email_outbox(db, {
+        "_id": email_result.inserted_id,
+        "invitation_id": result.inserted_id,
+        "to": email,
+        "subject": email_subject,
+        "body": email_body,
+        "status": "pending",
+    })
 
     return {
         "message": "Invitation created",

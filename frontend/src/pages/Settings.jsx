@@ -28,9 +28,14 @@ const Settings = () => {
     try {
       const response = await api.post(`/api/workspaces/${id}/invitations`, { email: email.trim() })
       setEmail('')
-      setSuccess(response.data?.email_status === 'accepted_by_smtp'
+      const emailStatus = response.data?.email_status
+      setSuccess(emailStatus === 'accepted_by_smtp'
         ? 'Invitation created and accepted by the SMTP server.'
-        : 'Invitation created, but email delivery failed. Check SMTP configuration and the email outbox.')
+        : emailStatus === 'accepted_by_provider'
+          ? 'Invitation created and accepted by the email provider.'
+          : emailStatus === 'sending'
+            ? 'Invitation created; email delivery is in progress.'
+            : 'Invitation created, but email delivery failed. Check the email provider configuration and outbox.')
     } catch (err) {
       setError(err?.response?.data?.detail || 'Could not create the invitation.')
     } finally {
