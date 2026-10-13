@@ -4,7 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 
-EMBEDDING_DIMENSIONS = 384
+EMBEDDING_DIMENSIONS = 384  # Must match BAAI/bge-small-en-v1.5 and stored chunk vectors.
 
 
 class DocumentResponse(BaseModel):

@@ -134,7 +134,10 @@ export default function Documents() {
         `Uploaded and processed ${newDocument.filename}: ${newDocument.chunk_count} chunks stored.`,
       )
     } catch (err) {
-      setError(getErrorMessage(err))
+      const message = getErrorMessage(err)
+      // The API stores a failed document record for diagnosis/retry visibility.
+      await loadDocuments()
+      setError(message)
     } finally {
       setUploading(false)
       if (fileInputRef.current) fileInputRef.current.value = ''

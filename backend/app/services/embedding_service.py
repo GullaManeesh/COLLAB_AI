@@ -1,119 +1,108 @@
+"""Local FastEmbed inference for the workspace document vectors."""
 
+import logging
 import math
 import os
-import logging
+import time
 
-import httpx
+from app.schemas.documents import EMBEDDING_DIMENSIONS
 
 logger = logging.getLogger(__name__)
 
-MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
-HF_API_URL = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{MODEL_ID}"
-
-# Optional — works without a token for public models, but rate limits are higher with one
-HF_API_TOKEN = os.getenv("HF_API_TOKEN", "")
-
-# Maximum texts per request (HF Inference API limit)
-_BATCH_SIZE = 128
-
-# Retry settings for cold-start / model loading delays
-_MAX_RETRIES = 3
-_RETRY_DELAY = 5.0  # seconds
+MODEL_ID = "BAAI/bge-small-en-v1.5"
+_MODEL = None
+_MODEL_ERROR: Exception | None = None
+_LAST_FAILURE_AT = 0.0
+_RETRY_AFTER_SECONDS = 60.0
 
 
-def _headers() -> dict:
-    headers = {"Content-Type": "application/json"}
-    if HF_API_TOKEN:
-        headers["Authorization"] = f"Bearer {HF_API_TOKEN}"
-    return headers
+class EmbeddingModelUnavailableError(RuntimeError):
+    """Raised when the local model cannot be loaded for an indexing attempt."""
 
 
-def _normalize(vector: list[float]) -> list[float]:
-    """L2-normalize a vector so cosine similarity = dot product."""
-    norm = math.sqrt(sum(v * v for v in vector))
+def initialize_embedding_model(*, force: bool = False) -> bool:
+    """Load the ONNX model once; return False when it is unavailable."""
+    global _MODEL, _MODEL_ERROR, _LAST_FAILURE_AT
+
+    if _MODEL is not None:
+        return True
+    if (
+        _MODEL_ERROR is not None
+        and not force
+        and time.monotonic() - _LAST_FAILURE_AT < _RETRY_AFTER_SECONDS
+    ):
+        return False
+
+    try:
+        from fastembed import TextEmbedding
+
+        cache_dir = os.getenv("FASTEMBED_CACHE_PATH") or None
+        _MODEL = TextEmbedding(model_name=MODEL_ID, cache_dir=cache_dir)
+        _MODEL_ERROR = None
+        logger.info(
+            "Loaded local FastEmbed model=%s dimensions=%d cache=%s",
+            MODEL_ID,
+            EMBEDDING_DIMENSIONS,
+            cache_dir or "FastEmbed default",
+        )
+        return True
+    except Exception as exc:
+        _MODEL = None
+        _MODEL_ERROR = exc
+        _LAST_FAILURE_AT = time.monotonic()
+        logger.exception(
+            "Could not initialize local FastEmbed model=%s cache=%s; check outbound DNS/network and model cache",
+            MODEL_ID,
+            os.getenv("FASTEMBED_CACHE_PATH") or "FastEmbed default",
+        )
+        return False
+
+
+def _get_model():
+    if not initialize_embedding_model():
+        reason = (
+            f"{type(_MODEL_ERROR).__name__}: {_MODEL_ERROR}"
+            if _MODEL_ERROR
+            else "model initialization did not complete"
+        )
+        raise EmbeddingModelUnavailableError(
+            f"Local embedding model {MODEL_ID} is unavailable ({reason}). "
+            "Check the service's DNS/network access to Hugging Face or its model cache, then retry indexing."
+        ) from _MODEL_ERROR
+    return _MODEL
+
+
+def _normalize(vector) -> list[float]:
+    values = [float(value) for value in vector]
+    if len(values) != EMBEDDING_DIMENSIONS:
+        raise RuntimeError(
+            f"Embedding model returned {len(values)} dimensions; expected {EMBEDDING_DIMENSIONS}"
+        )
+    if not all(math.isfinite(value) for value in values):
+        raise RuntimeError("Embedding model returned a non-finite value")
+    norm = math.sqrt(sum(value * value for value in values))
     if norm == 0:
-        return vector
-    return [v / norm for v in vector]
-
-
-def _call_hf_api(payload: dict) -> list:
-    """
-    Call the HuggingFace Inference API with retry logic for model cold starts.
-    """
-    import time
-
-    last_error = None
-    for attempt in range(1, _MAX_RETRIES + 1):
-        try:
-            with httpx.Client(timeout=120.0) as client:
-                response = client.post(
-                    HF_API_URL,
-                    json=payload,
-                    headers=_headers(),
-                )
-
-            if response.status_code == 503:
-                # Model is loading — wait and retry
-                body = response.json()
-                wait = body.get("estimated_time", _RETRY_DELAY)
-                logger.info(
-                    "HF model loading (attempt %d/%d), waiting %.1fs…",
-                    attempt, _MAX_RETRIES, wait,
-                )
-                time.sleep(min(wait, 30))
-                continue
-
-            response.raise_for_status()
-            return response.json()
-
-        except httpx.HTTPStatusError as exc:
-            last_error = exc
-            logger.warning(
-                "HF API error (attempt %d/%d): %s",
-                attempt, _MAX_RETRIES, exc,
-            )
-            if attempt < _MAX_RETRIES:
-                time.sleep(_RETRY_DELAY)
-        except httpx.RequestError as exc:
-            last_error = exc
-            logger.warning(
-                "HF API request error (attempt %d/%d): %s",
-                attempt, _MAX_RETRIES, exc,
-            )
-            if attempt < _MAX_RETRIES:
-                time.sleep(_RETRY_DELAY)
-
-    raise RuntimeError(
-        f"HuggingFace Inference API failed after {_MAX_RETRIES} attempts: {last_error}"
-    )
+        raise RuntimeError("Embedding model returned a zero vector")
+    return [value / norm for value in values]
 
 
 def generate_embedding(text: str) -> list[float]:
-    """Convert one text string into a 384-dimensional vector."""
+    """Convert one non-empty string into a normalized 384-dimensional vector."""
     if not text.strip():
         raise ValueError("Cannot generate an embedding for empty text")
-
-    result = _call_hf_api({"inputs": text})
-
-    # The API returns a single vector for a single string input
-    vector = result if isinstance(result[0], (int, float)) else result[0]
-    return _normalize(vector)
+    return generate_embeddings([text])[0]
 
 
 def generate_embeddings(texts: list[str]) -> list[list[float]]:
-    """Convert multiple chunks into normalized vectors via the HF Inference API."""
+    """Generate normalized vectors locally through the cached ONNX model."""
     if not texts:
         return []
-
     if any(not text.strip() for text in texts):
         raise ValueError("Cannot embed empty text")
 
-    all_vectors: list[list[float]] = []
-
-    # Process in batches to respect API limits
-    for i in range(0, len(texts), _BATCH_SIZE):
-        batch = texts[i : i + _BATCH_SIZE]
-        result = _call_hf_api({"inputs": batch})
-        all_vectors.extend(result)
-
-    return [_normalize(v) for v in all_vectors]
+    vectors = list(_get_model().embed(texts))
+    if len(vectors) != len(texts):
+        raise RuntimeError(
+            f"Embedding count mismatch: expected {len(texts)}, received {len(vectors)}"
+        )
+    return [_normalize(vector) for vector in vectors]

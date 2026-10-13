@@ -17,6 +17,7 @@ from app.routes.invitation_routes import router as invitation_router
 from app.routes.notification_routes import router as notification_router
 from app.routes.document_routes import router as document_router
 from app.routes.chat_routes import router as chat_router
+from app.services.embedding_service import initialize_embedding_model
 
 
 @asynccontextmanager
@@ -24,6 +25,10 @@ async def lifespan(app: FastAPI):
     try:
         await connect_to_mongodb()
         await create_indexes()
+        # Warm the local ONNX model once per process. The API remains available
+        # if model download/cache access fails; upload requests keep documents
+        # marked failed and can retry after network/cache recovery.
+        initialize_embedding_model()
         yield
     finally:
         await close_mongodb_connection()

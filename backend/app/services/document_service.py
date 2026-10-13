@@ -10,6 +10,8 @@ from app.services.document_processing_service import (
     extract_text,
 )
 from app.services.embedding_service import (
+    EmbeddingModelUnavailableError,
+    MODEL_ID,
     generate_embedding,
     generate_embeddings,
 )
@@ -99,6 +101,7 @@ async def upload_document(
         "content_type": content_type or "application/octet-stream",
         "size_bytes": len(file_bytes),
         "status": "processing",
+        "embedding_model": MODEL_ID,
         "chunk_count": 0,
         "created_at": now,
         "updated_at": now,
@@ -118,7 +121,7 @@ async def upload_document(
         if not chunks:
             raise ValueError("The document did not produce any valid text chunks")
 
-        # 4. Dense vector embeddings (MiniLM-L6-v2)
+        # 4. Dense local FastEmbed vectors (BAAI/bge-small-en-v1.5, 384 dims)
         chunk_texts = [c["text"] for c in chunks]
         embeddings = generate_embeddings(chunk_texts)
 
@@ -138,6 +141,7 @@ async def upload_document(
                 "page": chunk.get("page"),
                 "start_index": chunk.get("start_index", 0),
                 "embedding": embedding,
+                "embedding_model": MODEL_ID,
                 "created_at": now,
             })
 
@@ -193,7 +197,13 @@ async def upload_document(
         if isinstance(exc, HTTPException):
             raise
 
-        if isinstance(exc, (ValueError, RuntimeError)):
+        if isinstance(exc, EmbeddingModelUnavailableError):
+            raise HTTPException(
+                status_code=503,
+                detail=str(exc),
+            ) from exc
+
+        if isinstance(exc, ValueError):
             raise HTTPException(
                 status_code=422,
                 detail=str(exc),
@@ -318,8 +328,26 @@ async def search_workspace_chunks(
 
     query_vector = generate_embedding(query)
 
+    ready_documents = [
+        document["_id"]
+        async for document in db.documents.find(
+            {
+                "workspace_id": workspace["_id"],
+                "status": "ready",
+                "embedding_model": MODEL_ID,
+            },
+            {"_id": 1},
+        )
+    ]
+    if not ready_documents:
+        return {"query": query, "results": [], "total": 0}
+
     cursor = db.chunks.find(
-        {"workspace_id": workspace["_id"]},
+        {
+            "workspace_id": workspace["_id"],
+            "document_id": {"$in": ready_documents},
+            "embedding_model": MODEL_ID,
+        },
         {
             "_id": 1,
             "document_id": 1,

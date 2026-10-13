@@ -13,3 +13,4 @@ python-multipart
 pypdf
 python-docx
 langchain-text-splitters
+fastembed>=0.7,<1
