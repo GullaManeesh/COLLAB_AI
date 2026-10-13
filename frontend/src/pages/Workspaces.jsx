@@ -138,7 +138,7 @@ const Workspaces = () => {
     }
   }, [refreshWorkspaces])
 
-  usePolling(refreshWorkspaces, 10000)
+  usePolling(refreshWorkspaces, 3000)
 
   const handleCreate = async ({ name, description, invitees }) => {
     if (creating) return

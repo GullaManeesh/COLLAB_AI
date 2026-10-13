@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { useParams, useOutletContext } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import api from '../api/client'
+import usePolling from '../hooks/usePolling'
 import { Users, UserPlus, UserMinus, Shield, Mail, Calendar, Settings as SettingsIcon, CheckCircle2, AlertCircle } from 'lucide-react'
 
 const Settings = () => {
@@ -23,6 +24,7 @@ const Settings = () => {
     try {
       const response = await api.get(`/api/workspaces/${id}/invitations`)
       setInvitations(response.data || [])
+      setError(null)
     } catch (err) {
       setError(err?.response?.data?.detail || 'Could not load pending invitations.')
     } finally {
@@ -42,6 +44,12 @@ const Settings = () => {
       .finally(() => { if (active) setLoadingInvitations(false) })
     return () => { active = false }
   }, [id, isOwner])
+
+  // Keep the pending list current when an invite is accepted in another
+  // browser/device, without requiring the workspace owner to reload Settings.
+  usePolling(() => {
+    if (isOwner) refreshInvitations()
+  }, isOwner ? 3000 : null)
 
   const submitInvitation = async (targetEmail) => {
     if (!targetEmail.trim()) return

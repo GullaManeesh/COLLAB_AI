@@ -74,7 +74,7 @@ const WorkspaceLayout = () => {
     return () => { workspaceRequestVersion.current += 1 }
   }, [fetchWorkspace, id])
 
-  usePolling(fetchWorkspace, 10000)
+  usePolling(fetchWorkspace, 3000)
 
   const navItems = [
     { path: `/w/${id}/chat`, label: 'Team Chat', icon: MessageSquare, badge: 'Live' },
@@ -98,7 +98,7 @@ const WorkspaceLayout = () => {
   }
 
   return (
-    <div className="flex h-screen w-full bg-[#F8F8F6] text-[#18181B] overflow-hidden select-none">
+    <div className="flex h-screen min-h-0 w-full overflow-hidden bg-[#F8F8F6] text-[#18181B] select-none [height:100dvh]">
       {/* Sidebar for Desktop */}
       <aside className="hidden lg:flex lg:w-72 lg:flex-col border-r border-[#E4E4E0] bg-white z-20 shrink-0">
         {/* Workspace Brand Header */}
@@ -187,8 +187,8 @@ const WorkspaceLayout = () => {
       {/* Main Container */}
       <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden relative">
         {/* Topbar / Header */}
-        <header className="h-14 border-b border-[#E4E4E0] bg-white px-4 sm:px-6 flex items-center justify-between shrink-0 z-10 shadow-xs">
-          <div className="flex items-center space-x-3 min-w-0">
+        <header className="h-14 border-b border-[#E4E4E0] bg-white px-2.5 sm:px-6 flex items-center justify-between shrink-0 z-10 shadow-xs">
+          <div className="flex items-center space-x-2 sm:space-x-3 min-w-0">
             {/* Mobile menu trigger button */}
             <button
               onClick={() => setMobileMenuOpen(true)}
@@ -213,8 +213,8 @@ const WorkspaceLayout = () => {
             </div>
           </div>
 
-          <div className="flex items-center space-x-3 shrink-0">
-            <div className="flex items-center space-x-1.5 text-xs font-semibold text-[#18181B] bg-[#F4F4F5] border border-[#E4E4E0] px-2.5 py-1 rounded-full">
+          <div className="flex items-center space-x-2 sm:space-x-3 shrink-0">
+            <div className="flex items-center space-x-1.5 text-xs font-semibold text-[#18181B] bg-[#F4F4F5] border border-[#E4E4E0] px-2 py-1 sm:px-2.5 rounded-full">
               <span className="w-2 h-2 rounded-full bg-[#18181B] animate-pulse"></span>
               <span className="hidden xs:inline text-[11px]">Realtime Live</span>
             </div>
@@ -316,7 +316,7 @@ const WorkspaceLayout = () => {
         </AnimatePresence>
 
         {/* Nested Route Viewport */}
-        <main className="flex-1 overflow-hidden relative">
+        <main className="flex-1 min-h-0 min-w-0 overflow-hidden relative">
           <Outlet context={contextValue} />
         </main>
       </div>

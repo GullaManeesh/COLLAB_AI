@@ -346,6 +346,7 @@ async def list_workspace_invitations(workspace_id: str, user: dict) -> list[dict
     if workspace is None:
         raise HTTPException(status_code=404, detail="Workspace not found or you are not the owner")
     cursor = db.invitations.find({"workspace_id": workspace["_id"], "status": "pending"}).sort("created_at", -1)
+    members = workspace.get("members", [])
     result = []
     async for invitation in cursor:
         expires_at = invitation.get("expires_at")
@@ -355,6 +356,38 @@ async def list_workspace_invitations(workspace_id: str, user: dict) -> list[dict
                 {"$set": {"status": "expired", "updated_at": datetime.now(timezone.utc)}},
             )
             continue
+
+        # A few legacy/direct-add flows may have added the account to the
+        # workspace without transitioning its pending invite. Membership is
+        # authoritative: reconcile the stale invitation so it cannot still be
+        # revoked or shown as pending.
+        invitation_email = (invitation.get("recipient_email") or "").strip().lower()
+        invitation_user_id = invitation.get("recipient_user_id")
+        matching_member = next((
+            member for member in members
+            if (invitation_user_id and member.get("user_id") == invitation_user_id)
+            or (invitation_email and (member.get("email") or "").strip().lower() == invitation_email)
+        ), None)
+        if matching_member is None and invitation_email:
+            invitation_user = await db.users.find_one({"email": invitation_email})
+            if invitation_user:
+                matching_member = next((
+                    member for member in members
+                    if member.get("user_id") == invitation_user["_id"]
+                ), None)
+                if matching_member:
+                    invitation_user_id = invitation_user["_id"]
+        if matching_member:
+            now = datetime.now(timezone.utc)
+            accepted_fields = {"status": "accepted", "accepted_at": now, "updated_at": now}
+            if invitation_user_id:
+                accepted_fields["recipient_user_id"] = invitation_user_id
+            await db.invitations.update_one(
+                {"_id": invitation["_id"], "status": "pending"},
+                {"$set": accepted_fields},
+            )
+            continue
+
         outbox = await db.email_outbox.find_one({"invitation_id": invitation["_id"]}, sort=[("created_at", -1)])
         result.append({
             "invitation_id": str(invitation["_id"]), "email": invitation["recipient_email"],

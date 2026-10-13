@@ -56,7 +56,7 @@ const Notifications = () => {
     }
   }, [loadNotifications])
 
-  usePolling(loadNotifications, 15000)
+  usePolling(loadNotifications, 5000)
 
   const unreadCount = notifications.filter((n) => !n.isRead).length
 

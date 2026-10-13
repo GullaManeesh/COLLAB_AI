@@ -61,7 +61,7 @@ const NotificationCenter = ({ className = '', onWorkspaceChange }) => {
     }
   }, [loadNotifications])
 
-  usePolling(loadNotifications, 15000)
+  usePolling(loadNotifications, 5000)
 
   // Click outside listener
   useEffect(() => {
