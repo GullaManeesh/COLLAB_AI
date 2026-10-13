@@ -20,6 +20,9 @@ def serialize_message(message: dict) -> dict:
         "content": message["content"],
         "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
         "client_message_id": message.get("client_message_id"),
+        "message_type": message.get("message_type", "user"),
+        "agent_type": message.get("agent_type"),
+        "sources": message.get("sources", []),
     }
 
 
@@ -107,6 +110,7 @@ async def save_team_message(
     user: dict,
     content: str,
     client_message_id: str | None = None,
+    authorized_delivery: bool = False,
 ) -> dict:
     content = content.strip()
 
@@ -129,6 +133,7 @@ async def save_team_message(
         "content": content,
         "created_at": now,
         "client_message_id": client_message_id,
+        "message_type": "user",
     }
 
     result = await db.messages.insert_one(record)
@@ -136,15 +141,48 @@ async def save_team_message(
 
     message = serialize_message(record)
 
-    print(
-        f"[CHAT] Saved message: {message['content']!r}, "
-        f"workspace={workspace_id}"
-    )
-
     # Only broadcast after MongoDB confirms the message was saved.
-    await chat_manager.broadcast(
+    event = {"type": "message", "message": message}
+    if authorized_delivery:
+        await chat_manager.broadcast_authorized(workspace_id, event)
+    else:
+        await chat_manager.broadcast(workspace_id, event)
+
+    return message
+
+
+async def save_agent_message(
+    workspace_id: str,
+    requester: dict,
+    content: str,
+    *,
+    agent_type: str,
+    sources: list[dict],
+) -> dict:
+    """Persist a server-authored message without attributing it to a user."""
+    content = content.strip()
+    if not content or len(content) > 5000:
+        raise ValueError("Agent response must contain between 1 and 5000 characters")
+
+    workspace = await get_workspace_for_member(workspace_id, requester)
+    db = get_database()
+    record = {
+        "workspace_id": workspace["_id"],
+        "sender_id": f"agent:{agent_type}",
+        "sender_name": "Summarizer" if agent_type == "summarizer" else "CollabAI Agent",
+        "sender_picture": None,
+        "content": content,
+        "created_at": datetime.now(timezone.utc),
+        "client_message_id": None,
+        "message_type": "agent",
+        "agent_type": agent_type,
+        "sources": sources,
+    }
+    result = await db.messages.insert_one(record)
+    record["_id"] = result.inserted_id
+    message = serialize_message(record)
+    await chat_manager.broadcast_authorized(
         workspace_id,
         {"type": "message", "message": message},
     )
-
     return message

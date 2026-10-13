@@ -17,6 +17,9 @@ class ChatMessageResponse(BaseModel):
     content: str
     created_at: datetime
     client_message_id: str | None = None
+    message_type: str = "user"
+    agent_type: str | None = None
+    sources: list[dict] = Field(default_factory=list)
 
 
 class ChatHistoryResponse(BaseModel):

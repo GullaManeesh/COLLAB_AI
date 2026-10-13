@@ -79,7 +79,7 @@ async def team_chat_websocket(
         await websocket.close(code=1011, reason="Unable to verify workspace access")
         return
 
-    await chat_manager.connect(workspace_id, websocket)
+    await chat_manager.connect(workspace_id, websocket, str(user["_id"]))
 
     try:
         await websocket.send_json({"type": "connected"})

@@ -101,6 +101,11 @@ async def create_indexes() -> None:
     )
     await _safe_create_index(
         db.chunks,
+        [("workspace_id", 1), ("created_at", -1)],
+        name="idx_chunks_workspace_created",
+    )
+    await _safe_create_index(
+        db.chunks,
         [("document_id", 1)],
         name="idx_chunks_document",
     )
@@ -108,4 +113,21 @@ async def create_indexes() -> None:
         db.messages,
         [("workspace_id", 1), ("created_at", -1), ("_id", -1)],
         name="idx_messages_workspace_created",
+    )
+    await _safe_create_index(
+        db.agent_runs,
+        [("workspace_id", 1), ("requesting_user_id", 1), ("client_request_id", 1)],
+        unique=True,
+        name="uq_agent_run_workspace_user_request",
+    )
+    await _safe_create_index(
+        db.agent_runs,
+        [("status", 1), ("started_at", 1)],
+        name="idx_agent_runs_status_started",
+    )
+    await _safe_create_index(
+        db.agent_rate_limits,
+        [("expires_at", 1)],
+        expireAfterSeconds=0,
+        name="ttl_agent_rate_limits_expires_at",
     )

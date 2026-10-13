@@ -1,7 +1,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { ArrowDown, CheckCircle2, CircleAlert, LoaderCircle, Send, Wifi, WifiOff } from 'lucide-react'
+import { ArrowDown, Bot, ChevronRight, CircleAlert, FileText, LoaderCircle, Send, Sparkles, Wifi, WifiOff } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import api from '../api/client'
 import { useAuth } from '../context/AuthContext'
 
@@ -12,7 +14,15 @@ function mergeMessages(current, incoming) {
   const byId = new Map(current.map((message) => [message.id, message]))
 
   for (const message of incoming) {
-    if (message?.id) byId.set(message.id, message)
+    if (!message?.id) continue
+    if (message.client_message_id) {
+      for (const [existingId, existing] of byId) {
+        if (existing.client_message_id === message.client_message_id && existingId !== message.id) {
+          byId.delete(existingId)
+        }
+      }
+    }
+    byId.set(message.id, message)
   }
 
   return [...byId.values()].sort(
@@ -39,6 +49,10 @@ export default function Chat() {
   const [connection, setConnection] = useState('connecting')
   const [error, setError] = useState('')
   const [showScrollButton, setShowScrollButton] = useState(false)
+  const [agentStatus, setAgentStatus] = useState('')
+  const [commandOptionActive, setCommandOptionActive] = useState(false)
+  const [dismissCommandSuggestion, setDismissCommandSuggestion] = useState(false)
+  const activeWorkspaceIdRef = useRef(workspaceId)
 
   const socketRef = useRef(null)
   const reconnectTimerRef = useRef(null)
@@ -46,8 +60,11 @@ export default function Chat() {
   const shouldReconnectRef = useRef(true)
   const messagesEndRef = useRef(null)
   const listRef = useRef(null)
+  const messageInputRef = useRef(null)
   const contentRef = useRef('')
   const sendingRef = useRef(false)
+  const agentRequestIdRef = useRef(null)
+  activeWorkspaceIdRef.current = workspaceId
 
   const apiBase = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000')
     .replace(/\/+$/, '')
@@ -69,15 +86,17 @@ export default function Chat() {
       const response = await api.get(historyUrl, {
         params: { limit: 50 },
       })
+      if (activeWorkspaceIdRef.current !== workspaceId) return
 
       setMessages((current) =>
         mergeMessages(current, response.data.messages || []),
       )
       setError('')
     } catch (err) {
+      if (activeWorkspaceIdRef.current !== workspaceId) return
       setError(`Could not load chat history: ${getErrorMessage(err)}`)
     } finally {
-      setLoading(false)
+      if (activeWorkspaceIdRef.current === workspaceId) setLoading(false)
     }
   }, [historyUrl, workspaceId])
 
@@ -87,12 +106,17 @@ export default function Chat() {
     let disposed = false
     let socket = null
     let pollInterval = null
+    let initialConnectTimer = null
 
     shouldReconnectRef.current = true
     reconnectAttemptsRef.current = 0
     setMessages([])
     setLoading(true)
     setError('')
+    setAgentStatus('')
+    agentRequestIdRef.current = null
+    sendingRef.current = false
+    setSending(false)
     setConnection('connecting')
 
     const wsBase = apiBase.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:')
@@ -128,7 +152,6 @@ export default function Chat() {
       }
 
       socket.onmessage = (event) => {
-        console.log('[CHAT] WebSocket event received:', event.data)
         let payload
 
         try {
@@ -136,6 +159,8 @@ export default function Chat() {
         } catch {
           return
         }
+
+        if (activeWorkspaceIdRef.current !== workspaceId) return
 
         if (payload.type === 'connected') {
           return
@@ -163,6 +188,17 @@ export default function Chat() {
             return mergeMessages(withoutPending, [incoming])
           })
 
+          return
+        }
+
+        if (payload.type === 'agent.run') {
+          if (payload.client_request_id !== agentRequestIdRef.current) return
+          if (payload.status === 'running') setAgentStatus('Summarizer is working…')
+          if (payload.status === 'succeeded') setAgentStatus('')
+          if (payload.status === 'failed') {
+            setAgentStatus('')
+            setError(payload.message || 'Summarization failed. Please try again.')
+          }
           return
         }
 
@@ -208,9 +244,11 @@ export default function Chat() {
       }, delay)
     }
 
-    // Initial load + connect
+    // Defer the initial socket by one tick. React Strict Mode immediately
+    // cleans up its development-only first effect pass; this prevents that
+    // discarded pass from opening a socket that is closed mid-handshake.
     loadHistory()
-    connect()
+    initialConnectTimer = setTimeout(connect, 0)
 
     // Safety-net poll: only re-fetch when disconnected so missed messages
     // appear once the user reconnects. Runs every 60s as a last resort.
@@ -226,6 +264,9 @@ export default function Chat() {
 
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current)
+      }
+      if (initialConnectTimer) {
+        clearTimeout(initialConnectTimer)
       }
 
       if (pollInterval) {
@@ -262,9 +303,64 @@ export default function Chat() {
     event.preventDefault()
 
     const text = contentRef.current.trim()
-    const socket = socketRef.current
-
     if (!text || sendingRef.current) return
+
+    const summarize = /^@summarizer(?:\s|$)/i.test(text)
+    if (summarize) {
+      const clientRequestId = crypto.randomUUID()
+      const optimisticMessage = {
+        id: `pending-${clientRequestId}`,
+        client_message_id: clientRequestId,
+        workspace_id: workspaceId,
+        sender_id: user?.id,
+        sender_name: user?.name || user?.username || 'You',
+        sender_picture: user?.picture || null,
+        content: text,
+        created_at: new Date().toISOString(),
+        pending: true,
+      }
+      agentRequestIdRef.current = clientRequestId
+      setMessages((current) => mergeMessages(current, [optimisticMessage]))
+      sendingRef.current = true
+      setSending(true)
+      setError('')
+      setContent('')
+      contentRef.current = ''
+      try {
+        const response = await api.post(
+          `/api/workspaces/${workspaceId}/agents/summarizer`,
+          { content: text, client_request_id: clientRequestId },
+          { timeout: 150000 },
+        )
+        if (activeWorkspaceIdRef.current !== workspaceId) return
+        const result = response.data
+        setMessages((current) => mergeMessages(
+          current.filter((message) => message.id !== optimisticMessage.id),
+          [result.request_message, result.agent_message].filter(Boolean),
+        ))
+        setAgentStatus(
+          result.status === 'pending' || result.status === 'running'
+            ? 'Summarizer is working…'
+            : '',
+        )
+      } catch (err) {
+        if (activeWorkspaceIdRef.current !== workspaceId) return
+        setMessages((current) => current.filter((message) => message.id !== optimisticMessage.id))
+        setAgentStatus('')
+        setError(getErrorMessage(err))
+      } finally {
+        if (
+          activeWorkspaceIdRef.current === workspaceId
+          && agentRequestIdRef.current === clientRequestId
+        ) {
+          sendingRef.current = false
+          setSending(false)
+        }
+      }
+      return
+    }
+
+    const socket = socketRef.current
 
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       setError('Chat is reconnecting. Please try again when connected.')
@@ -326,6 +422,44 @@ export default function Chat() {
   }[connection]
 
   const isConnected = connection === 'connected'
+  const canSubmitCommand = Boolean(workspaceId && isConnected && !sending)
+  const isSummarizerCommand = /^@summarizer(?:\s|$)/i.test(content.trim())
+  const showCommandSuggestion = canSubmitCommand
+    && content.startsWith('@')
+    && !isSummarizerCommand
+    && !dismissCommandSuggestion
+
+  function selectSummarizerCommand() {
+    const remainingText = content.replace(/^@\S*/, '').trimStart()
+    const nextContent = `@summarizer${remainingText ? ` ${remainingText}` : ' '}`
+    setContent(nextContent)
+    contentRef.current = nextContent
+    setDismissCommandSuggestion(false)
+    setCommandOptionActive(false)
+    messageInputRef.current?.focus()
+  }
+
+  function handleCommandInputKeyDown(event) {
+    if (!showCommandSuggestion) return
+
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      setCommandOptionActive(true)
+      return
+    }
+
+    if (event.key === 'Enter' && commandOptionActive) {
+      event.preventDefault()
+      selectSummarizerCommand()
+      return
+    }
+
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      setDismissCommandSuggestion(true)
+      setCommandOptionActive(false)
+    }
+  }
 
   return (
     <div className="absolute inset-0 flex h-full min-h-0 flex-col overflow-hidden bg-[#F8F8F6] text-[#18181B]">
@@ -394,30 +528,88 @@ export default function Chat() {
           </div>
         ) : (
           messages.map((message) => {
+            const isAgent = message.message_type === 'agent'
             const isMe = message.sender_id === user?.id
-            const senderName = isMe ? 'You' : message.sender_name
+            const senderName = isAgent
+              ? `@${(message.agent_type || message.sender_name || 'agent').replace(/^@/, '').toLowerCase()}`
+              : isMe ? 'You' : message.sender_name
+            const agentCommandMatch = !isAgent
+              ? message.content?.match(/^@summarizer(?=\s|$)/i)
+              : null
 
             return (
               <article
                 key={message.id}
                 className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}
               >
-                <div className="mb-1.5 flex items-center gap-2 px-1 text-[11px] text-[#71717A]">
-                  <span className="font-semibold text-[#18181B]">{senderName}</span>
-                  <span>·</span>
-                  <time dateTime={message.created_at}>
+                <div className={`mb-2 flex items-center gap-2 px-1 text-[11px] text-[#71717A] ${isAgent ? 'w-full justify-between' : `w-fit max-w-[88%] self-start sm:max-w-[70%] ${isMe ? 'self-end' : ''}`}`}>
+                  <div className="flex min-w-0 items-center gap-2">
+                    {isAgent ? (
+                      <>
+                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#18181B] text-white">
+                          <Bot className="h-4 w-4" />
+                        </span>
+                        <span className="truncate rounded-md bg-[#18181B] px-2 py-1 text-xs font-bold text-white">{senderName}</span>
+                        <span className="rounded border border-[#E4E4E0] bg-white px-1.5 py-0.5 text-[10px] font-medium text-[#52525B]">Agent</span>
+                      </>
+                    ) : (
+                      <span className="truncate font-semibold text-[#18181B]">{senderName}</span>
+                    )}
+                  </div>
+                  <time className="shrink-0 font-mono text-[10px]" dateTime={message.created_at}>
                     {formatTime(message.created_at)}
                   </time>
                 </div>
 
                 <div
-                  className={`max-w-[88%] whitespace-pre-wrap break-words rounded-2xl px-4 py-2.5 text-sm leading-relaxed sm:max-w-[70%] ${isMe
+                  className={isAgent
+                    ? 'w-full max-w-full rounded-xl border border-[#E4E4E0] border-l-[3px] border-l-[#18181B] bg-white px-4 py-3 shadow-xs sm:px-5 sm:py-4'
+                    : `max-w-[88%] whitespace-pre-wrap break-words rounded-2xl px-4 py-2.5 text-sm leading-relaxed sm:max-w-[70%] ${isMe
                       ? 'rounded-tr-sm bg-[#18181B] text-white'
                       : 'rounded-tl-sm border border-[#E4E4E0] bg-white text-[#18181B]'
                     }`}
                 >
-                  {message.content}
+                  {isAgent ? (
+                    <div className="chat-markdown w-full min-w-0 break-words select-text">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                    </div>
+                  ) : agentCommandMatch ? (
+                    <>
+                      <span className={`font-semibold ${isMe ? 'text-orange-300' : 'text-orange-700'}`}>
+                        {agentCommandMatch[0]}
+                      </span>
+                      {message.content.slice(agentCommandMatch[0].length)}
+                    </>
+                  ) : message.content}
                 </div>
+                {isAgent && message.sources?.length > 0 && (
+                  <details className="group mt-2 w-full max-w-full border-t border-[#E4E4E0] pt-2">
+                    <summary className="flex w-fit cursor-pointer list-none items-center gap-2 rounded-md px-1 py-1 text-xs font-semibold text-[#3F3F46] outline-none hover:text-[#18181B] focus-visible:ring-2 focus-visible:ring-[#A1A1AA] [&::-webkit-details-marker]:hidden">
+                      <ChevronRight className="h-3.5 w-3.5 transition-transform group-open:rotate-90" />
+                      {message.sources.length} verified {message.sources.length === 1 ? 'source' : 'sources'}
+                    </summary>
+                    <div className="mt-2 space-y-2">
+                      {message.sources.map((source, index) => (
+                        <div
+                          key={`${source.source_type}:${source.chunk_id || source.source_id}`}
+                          className="flex min-w-0 items-start gap-2.5 rounded-xl border border-[#E4E4E0] bg-[#F8F8F6] px-3 py-2.5"
+                        >
+                          <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[#71717A]" />
+                          <div className="min-w-0 flex-1">
+                            <p className="break-words text-xs font-semibold text-[#27272A]">
+                              <span className="mr-1.5 font-mono text-[10px] text-[#71717A]">[{index + 1}]</span>
+                              {source.source_type === 'document' ? source.title : `Team chat · ${source.title}`}
+                              {source.page ? ` (Page ${source.page})` : ''}
+                            </p>
+                            {source.created_at && (
+                              <p className="mt-0.5 text-[10px] text-[#71717A]">{formatTime(source.created_at)}</p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
               </article>
             )
           })
@@ -440,34 +632,76 @@ export default function Chat() {
         </button>
       )}
 
-      <form
-        onSubmit={handleSend}
-        className="flex shrink-0 items-center gap-2 border-t border-[#E4E4E0] bg-white p-3 sm:p-4"
-      >
-        <input
-          type="text"
-          value={content}
-          onChange={(event) => setContent(event.target.value)}
-          maxLength={5000}
-          placeholder="Message your teammates..."
-          aria-label="Message your teammates"
-          className="min-w-0 flex-1 rounded-xl border border-[#E4E4E0] bg-[#F8F8F6] px-4 py-3 text-sm outline-none transition focus:border-[#18181B] focus:ring-2 focus:ring-black/10"
-        />
+      {agentStatus && (
+        <div className="shrink-0 border-t border-[#E4E4E0] bg-white px-4 pt-2 text-xs text-[#52525B]" role="status" aria-live="polite">
+          <span className="inline-flex items-center gap-1.5">
+            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+            {agentStatus}
+          </span>
+        </div>
+      )}
+      <div className="shrink-0 border-t border-[#E4E4E0] bg-white px-3 py-3 sm:px-4 sm:py-4">
+        {showCommandSuggestion && (
+          <div id="chat-command-suggestions" role="listbox" className="mb-2 rounded-xl border border-[#E4E4E0] bg-white p-1 shadow-sm">
+            <button
+              id="chat-command-suggestion-summarizer"
+              type="button"
+              role="option"
+              aria-selected={commandOptionActive}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={selectSummarizerCommand}
+              className={`flex w-full items-start gap-2 rounded-lg px-3 py-2 text-left transition ${commandOptionActive ? 'bg-[#F4F4F2]' : 'hover:bg-[#F8F8F6]'}`}
+            >
+              <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#52525B]" />
+              <span className="min-w-0">
+                <span className="block text-xs font-semibold text-[#18181B]">@summarizer</span>
+                <span className="block text-[11px] text-[#71717A]">Summarize relevant documents and recent team chat</span>
+              </span>
+            </button>
+          </div>
+        )}
+        <form onSubmit={handleSend} className="flex items-center gap-2">
+          <input
+            ref={messageInputRef}
+            type="text"
+            value={content}
+            onChange={(event) => {
+              setContent(event.target.value)
+              contentRef.current = event.target.value
+              setDismissCommandSuggestion(false)
+              setCommandOptionActive(false)
+            }}
+            onKeyDown={handleCommandInputKeyDown}
+            maxLength={5000}
+            placeholder="Message your team... Type @summarizer to summarize workspace context"
+            aria-label="Message your teammates"
+            aria-autocomplete="list"
+            aria-expanded={showCommandSuggestion}
+            aria-controls={showCommandSuggestion ? 'chat-command-suggestions' : undefined}
+            aria-activedescendant={showCommandSuggestion && commandOptionActive ? 'chat-command-suggestion-summarizer' : undefined}
+            className="min-w-0 flex-1 rounded-xl border border-[#E4E4E0] bg-[#F8F8F6] px-4 py-3 text-sm outline-none transition focus:border-[#18181B] focus:ring-2 focus:ring-black/10"
+          />
 
-        <button
-          type="submit"
-          disabled={!content.trim() || sending || !isConnected}
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#18181B] text-white transition hover:bg-[#27272A] disabled:cursor-not-allowed disabled:opacity-40"
-          aria-label="Send message"
-          title="Send message"
-        >
-          {sending ? (
-            <LoaderCircle className="h-4 w-4 animate-spin" />
-          ) : (
-            <Send className="h-4 w-4" />
-          )}
-        </button>
-      </form>
+          <button
+            type="submit"
+            disabled={!content.trim() || sending || !isConnected}
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#18181B] text-white transition hover:bg-[#27272A] disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="Send message"
+            title="Send message"
+          >
+            {sending ? (
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+            ) : (
+              <Send className="h-4 w-4" />
+            )}
+          </button>
+        </form>
+        {canSubmitCommand && (
+          <p className="mt-2 px-1 text-[11px] text-[#71717A]">
+            AI command: <span className="font-semibold text-[#52525B]">@summarizer</span> — summarize relevant documents and recent team chat
+          </p>
+        )}
+      </div>
     </div>
   )
 }

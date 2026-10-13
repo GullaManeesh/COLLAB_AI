@@ -14,6 +14,8 @@ from pymongo.errors import DuplicateKeyError
 from app.config.settings import settings
 from app.database.mongodb import get_database
 
+logger = logging.getLogger(__name__)
+
 
 def hash_session_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -46,8 +48,18 @@ def verify_credential(credential: str) -> dict:
             credential,
             google_requests.Request(),
             settings.GOOGLE_CLIENT_ID,
+            # Allow only a small clock difference between the machine issuing
+            # the token and this backend while retaining expiry validation.
+            clock_skew_in_seconds=5,
         )
     except (ValueError, GoogleAuthError) as exc:
+        # Google auth exceptions do not include the submitted credential, so
+        # the reason can be logged without exposing the ID token itself.
+        logger.warning(
+            "Google ID token verification failed error_type=%s reason=%s",
+            type(exc).__name__,
+            str(exc),
+        )
         raise HTTPException(status_code=401, detail="Invalid or expired Google ID token") from exc
 
 
@@ -116,9 +128,6 @@ def serialize_user(user: dict) -> dict:
         "username": user.get("username"),
         "email_verified": user.get("email_verified", False),
     }
-
-
-logger = logging.getLogger(__name__)
 
 
 def set_session_cookie(response: Response, token: str) -> None:

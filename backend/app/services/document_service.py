@@ -314,6 +314,7 @@ async def search_workspace_chunks(
     query: str,
     limit: int,
     user: dict,
+    max_candidates: int | None = None,
 ) -> dict:
     """
     Semantic search across all embedded chunks within a workspace.
@@ -357,8 +358,11 @@ async def search_workspace_chunks(
             "text": 1,
             "page": 1,
             "embedding": 1,
+            "created_at": 1,
         },
     )
+    if max_candidates is not None:
+        cursor = cursor.sort("created_at", -1).limit(max(1, max_candidates))
 
     scored_chunks = []
     async for chunk in cursor:
@@ -376,6 +380,7 @@ async def search_workspace_chunks(
             "chunk_index": chunk.get("chunk_index", 0),
             "text": chunk.get("text", ""),
             "page": chunk.get("page"),
+            "created_at": chunk.get("created_at"),
             "score": round(float(score), 4),
         })
 
