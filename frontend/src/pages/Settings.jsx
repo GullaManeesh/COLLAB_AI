@@ -9,6 +9,8 @@ const Settings = () => {
   const { workspace } = useOutletContext() || {}
   const { user } = useAuth()
   const [members, setMembers] = useState(workspace?.members || [])
+  const [invitations, setInvitations] = useState([])
+  const [loadingInvitations, setLoadingInvitations] = useState(true)
   const [email, setEmail] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
@@ -17,17 +19,40 @@ const Settings = () => {
 
   useEffect(() => setMembers(workspace?.members || []), [workspace?.members])
 
-  const handleAddMember = async (e) => {
-    e.preventDefault()
-    if (!email.trim()) return
+  const refreshInvitations = async () => {
+    try {
+      const response = await api.get(`/api/workspaces/${id}/invitations`)
+      setInvitations(response.data || [])
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Could not load pending invitations.')
+    } finally {
+      setLoadingInvitations(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!isOwner) {
+      setLoadingInvitations(false)
+      return undefined
+    }
+    let active = true
+    api.get(`/api/workspaces/${id}/invitations`)
+      .then(({ data }) => { if (active) setInvitations(data || []) })
+      .catch((err) => { if (active) setError(err?.response?.data?.detail || 'Could not load pending invitations.') })
+      .finally(() => { if (active) setLoadingInvitations(false) })
+    return () => { active = false }
+  }, [id, isOwner])
+
+  const submitInvitation = async (targetEmail) => {
+    if (!targetEmail.trim()) return
 
     setSubmitting(true)
     setError(null)
     setSuccess(null)
     
     try {
-      const response = await api.post(`/api/workspaces/${id}/invitations`, { email: email.trim() })
-      setEmail('')
+      const response = await api.post(`/api/workspaces/${id}/invitations`, { email: targetEmail.trim() })
+      setEmail((current) => current.trim().toLowerCase() === targetEmail.trim().toLowerCase() ? '' : current)
       const emailStatus = response.data?.email_status
       setSuccess(emailStatus === 'accepted_by_smtp'
         ? 'Invitation created and accepted by the SMTP server.'
@@ -36,10 +61,26 @@ const Settings = () => {
           : emailStatus === 'sending'
             ? 'Invitation created; email delivery is in progress.'
             : 'Invitation created, but email delivery failed. Check the email provider configuration and outbox.')
+      await refreshInvitations()
     } catch (err) {
       setError(err?.response?.data?.detail || 'Could not create the invitation.')
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  const handleAddMember = (e) => {
+    e.preventDefault()
+    return submitInvitation(email)
+  }
+
+  const handleRevokeInvitation = async (invitationId) => {
+    setError(null)
+    try {
+      await api.delete(`/api/workspaces/${id}/invitations/${invitationId}`)
+      setInvitations((current) => current.filter((item) => item.invitation_id !== invitationId))
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Could not revoke this invitation.')
     }
   }
 
@@ -142,8 +183,32 @@ const Settings = () => {
               </button>
             </form>
             <div className="text-[11px] text-[#71717A]">
-              Invitations are limited to registered CollabAI users. Access starts after acceptance.
+              Invite any email address. The recipient must sign in with that verified address and explicitly accept before getting access. Invitations expire after seven days.
             </div>
+          </div>
+
+          <div className="rounded-xl border border-[#E4E4E0] overflow-hidden">
+            <div className="border-b border-[#E4E4E0] bg-[#F8F8F6] px-4 py-3 text-xs font-semibold text-[#18181B]">Pending Invitations</div>
+            {loadingInvitations ? (
+              <p className="p-4 text-xs text-[#71717A]">Loading invitations…</p>
+            ) : invitations.length === 0 ? (
+              <p className="p-4 text-xs text-[#71717A]">No pending invitations.</p>
+            ) : invitations.map((invitation) => (
+              <div key={invitation.invitation_id} className="flex flex-wrap items-center justify-between gap-3 border-b last:border-b-0 border-[#F4F4F2] p-3.5">
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-semibold text-[#18181B]">{invitation.email}</div>
+                  <div className="mt-1 text-[11px] text-[#71717A]">
+                    Email: {{ accepted_by_provider: 'accepted by provider', accepted_by_smtp: 'accepted by SMTP server', failed: 'failed', sending: 'sending', pending: 'queued' }[invitation.email_status] || 'queued'} · Expires {invitation.expires_at ? new Date(invitation.expires_at).toLocaleDateString() : 'soon'}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {invitation.email_status === 'failed' && (
+                    <button type="button" disabled={submitting} onClick={() => submitInvitation(invitation.email)} className="rounded-lg border border-[#D4D4D0] px-2.5 py-1.5 text-[11px] font-semibold disabled:opacity-50">{submitting ? 'Retrying…' : 'Retry email'}</button>
+                  )}
+                  {isOwner && <button type="button" onClick={() => handleRevokeInvitation(invitation.invitation_id)} className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold text-red-700 hover:bg-red-50">Revoke</button>}
+                </div>
+              </div>
+            ))}
           </div>
 
           {/* Members list */}

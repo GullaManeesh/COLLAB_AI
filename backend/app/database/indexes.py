@@ -22,6 +22,14 @@ async def _safe_create_index(collection, keys, **kwargs) -> None:
 async def create_indexes() -> None:
     db = get_database()
 
+    # Replace the former user-id key: invitations for unregistered emails have
+    # no recipient_user_id, so a unique index on that field would collide.
+    try:
+        await db.invitations.drop_index("uq_pending_workspace_recipient_invitation")
+    except OperationFailure as exc:
+        if exc.code != 27:  # IndexNotFound
+            raise
+
     await _safe_create_index(
         db.invitations,
         [("token_hash", 1)],
@@ -61,10 +69,10 @@ async def create_indexes() -> None:
     )
     await _safe_create_index(
         db.invitations,
-        [("workspace_id", 1), ("recipient_user_id", 1)],
+        [("workspace_id", 1), ("recipient_email", 1)],
         unique=True,
         partialFilterExpression={"status": "pending"},
-        name="uq_pending_workspace_recipient_invitation",
+        name="uq_pending_workspace_email_invitation",
     )
     await _safe_create_index(
         db.notifications,

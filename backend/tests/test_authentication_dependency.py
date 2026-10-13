@@ -5,15 +5,27 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 from pymongo.errors import PyMongoError
+from starlette.requests import Request
 
 from app.middleware import authentication
 from app.services import auth_service
 
 
+def make_request(cookie: str | None = None) -> Request:
+    headers = [(b"origin", b"https://collabai.online")]
+    if cookie:
+        headers.append((b"cookie", f"collabai_session={cookie}".encode()))
+    return Request({
+        "type": "http", "http_version": "1.1", "method": "GET", "scheme": "https",
+        "path": "/api/workspaces", "raw_path": b"/api/workspaces", "query_string": b"",
+        "headers": headers, "client": ("127.0.0.1", 12345), "server": ("localhost", 443),
+    })
+
+
 class AuthenticationDependencyTests(unittest.TestCase):
     def test_missing_cookie_returns_401(self):
         with self.assertRaises(HTTPException) as raised:
-            asyncio.run(authentication.get_current_user(None))
+            asyncio.run(authentication.get_current_user(make_request(), None))
 
         self.assertEqual(raised.exception.status_code, 401)
 
@@ -48,7 +60,7 @@ class AuthenticationDependencyTests(unittest.TestCase):
             new=AsyncMock(return_value=None),
         ):
             with self.assertRaises(HTTPException) as raised:
-                asyncio.run(authentication.get_current_user("invalid-token"))
+                asyncio.run(authentication.get_current_user(make_request("invalid-token"), "invalid-token"))
 
         self.assertEqual(raised.exception.status_code, 401)
 
@@ -59,7 +71,7 @@ class AuthenticationDependencyTests(unittest.TestCase):
             new=AsyncMock(return_value=None),
         ):
             with self.assertRaises(HTTPException) as raised:
-                asyncio.run(authentication.get_current_user("valid-session"))
+                asyncio.run(authentication.get_current_user(make_request("valid-session"), "valid-session"))
 
         self.assertEqual(raised.exception.status_code, 401)
 
@@ -70,7 +82,7 @@ class AuthenticationDependencyTests(unittest.TestCase):
             new=AsyncMock(side_effect=PyMongoError("database unavailable")),
         ):
             with self.assertRaises(HTTPException) as raised:
-                asyncio.run(authentication.get_current_user("raw-token"))
+                asyncio.run(authentication.get_current_user(make_request("raw-token"), "raw-token"))
 
         self.assertEqual(raised.exception.status_code, 503)
 

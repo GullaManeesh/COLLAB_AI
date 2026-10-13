@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { GoogleLogin } from '@react-oauth/google'
 import { Layers } from 'lucide-react'
@@ -8,6 +8,7 @@ import api from '../api/client'
 
 const Login = () => {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { refreshUser } = useAuth()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -30,15 +31,18 @@ const Login = () => {
 
       const { user, needs_username } = response.data
       await refreshUser()
+      const requestedNext = searchParams.get('next')
+      const invitationToken = window.sessionStorage.getItem('pendingInvitationToken')
+      const next = requestedNext === 'invitation' && invitationToken ? `/invite#${invitationToken}` : '/workspaces'
 
       if (!user) {
         throw new Error('The server did not return a user.')
       }
 
       if (needs_username || !user.username) {
-        navigate('/set-username', { replace: true })
+        navigate(`/set-username?next=${requestedNext === 'invitation' && invitationToken ? 'invitation' : ''}`, { replace: true })
       } else {
-        navigate('/workspaces', { replace: true })
+        navigate(next, { replace: true })
       }
     } catch (err) {
       if (err.response) {

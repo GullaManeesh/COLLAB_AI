@@ -13,6 +13,7 @@ import Documents from './pages/Documents'
 import Tasks from './pages/Tasks'
 import Settings from './pages/Settings'
 import Notifications from './pages/Notifications'
+import InvitationLanding from './pages/InvitationLanding'
 import './styles/index.css'
 
 const RestoringSession = () => (
@@ -53,6 +54,7 @@ const App = () => (
         <Route path="/username" element={<UsernameRoute />} />
         <Route path="/register" element={<Register />} />
         <Route path="/signup" element={<Register />} />
+        <Route path="/invite" element={<InvitationLanding />} />
         <Route path="/workspaces" element={<ProtectedRoute><Workspaces /></ProtectedRoute>} />
         <Route path="/notifications" element={<ProtectedRoute><Notifications /></ProtectedRoute>} />
         <Route path="/w/:id" element={<ProtectedRoute><WorkspaceLayout /></ProtectedRoute>}>

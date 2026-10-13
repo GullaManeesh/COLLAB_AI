@@ -44,7 +44,7 @@ async def send_email(to_email: str, subject: str, body: str, *, idempotency_key:
                 response.raise_for_status()
                 payload = response.json()
         except Exception as exc:
-            logger.error("Resend API request failed recipient=%s error=%s", to_email, type(exc).__name__)
+            logger.error("Resend API request failed error=%s", type(exc).__name__)
             raise
         return {
             "provider": "resend",
@@ -74,6 +74,6 @@ async def send_email(to_email: str, subject: str, body: str, *, idempotency_key:
             start_tls=settings.SMTP_USE_TLS, timeout=15,
         )
     except Exception as exc:
-        logger.error("SMTP delivery failed host=%s recipient=%s error=%s", settings.SMTP_HOST, to_email, type(exc).__name__)
+        logger.error("SMTP delivery failed host=%s error=%s", settings.SMTP_HOST, type(exc).__name__)
         raise
     return {"provider": "smtp", "status": "accepted_by_smtp", "message_id": None}

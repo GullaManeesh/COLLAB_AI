@@ -16,3 +16,25 @@ class InvitationResponse(BaseModel):
     invitation_id: str
     status: str
     email_status: str | None = None
+
+
+class InvitationTokenRequest(BaseModel):
+    token: str
+
+
+class InvitationPreviewResponse(BaseModel):
+    workspace_id: str
+    workspace_name: str
+    inviter_name: str
+    recipient_email: str
+    expires_at: str
+    status: str
+
+
+class InvitationListItem(BaseModel):
+    invitation_id: str
+    email: str
+    status: str
+    email_status: str | None = None
+    created_at: str
+    expires_at: str | None = None

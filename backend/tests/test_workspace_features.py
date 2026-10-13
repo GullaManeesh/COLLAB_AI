@@ -1,6 +1,6 @@
 import asyncio
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -215,6 +215,151 @@ class InvitationAndNotificationUnitTests(unittest.TestCase):
         self.assertEqual(res["email_status"], "accepted_by_smtp")
         mock_db.notifications.insert_one.assert_awaited_once()
 
+    def test_invite_unregistered_email_stores_only_token_hash_and_uses_configured_frontend(self):
+        mock_db = MagicMock()
+        mock_db.workspaces.find_one = AsyncMock(return_value={"_id": self.ws_id, "name": "AI Lab", "owner_id": self.owner_id, "members": []})
+        mock_db.users.find_one = AsyncMock(return_value=None)
+        mock_db.invitations.find_one = AsyncMock(return_value=None)
+        mock_db.invitations.insert_one = AsyncMock(return_value=SimpleNamespace(inserted_id=ObjectId()))
+        mock_db.notifications.insert_one = AsyncMock()
+        mock_db.email_outbox.insert_one = AsyncMock(return_value=SimpleNamespace(inserted_id=ObjectId()))
+        mock_db.email_outbox.update_one = AsyncMock(return_value=SimpleNamespace(modified_count=1))
+        email_sender = AsyncMock(return_value={"provider": "resend", "status": "accepted_by_provider", "message_id": "mail-1"})
+
+        with patch("app.services.invitation_service.get_database", return_value=mock_db), \
+             patch("app.services.invitation_service.send_email", new=email_sender), \
+             patch.object(invitation_service.settings, "FRONTEND_URL", "https://collabai.online"):
+            result = asyncio.run(invitation_service.invite_teammate(str(self.ws_id), " New.Person@Example.com ", self.owner))
+
+        invite_doc = mock_db.invitations.insert_one.call_args.args[0]
+        outbox_doc = mock_db.email_outbox.insert_one.call_args.args[0]
+        sent_body = email_sender.call_args.args[2]
+        self.assertEqual(result["email_status"], "accepted_by_provider")
+        self.assertEqual(invite_doc["recipient_email"], "new.person@example.com")
+        self.assertEqual(invite_doc["recipient_user_id"], None)
+        self.assertEqual(len(invite_doc["token_hash"]), 64)
+        self.assertNotIn("token", invite_doc)
+        self.assertNotIn("body", outbox_doc)
+        self.assertIn("https://collabai.online/invite#", sent_body)
+        self.assertIn("expires", sent_body)
+        self.assertEqual(mock_db.notifications.insert_one.await_count, 0)
+
+    def test_invitation_token_preview_and_acceptance_require_matching_verified_email(self):
+        token = "secure-token-value"
+        invitation = {
+            "_id": ObjectId(), "workspace_id": self.ws_id,
+            "workspace_name": "AI Lab", "sender_user_id": self.owner_id,
+            "sender_name": "Owner", "recipient_email": self.recipient["email"],
+            "token_hash": invitation_service._hash_invitation_token(token),
+            "status": "pending", "expires_at": datetime.now(timezone.utc) + timedelta(days=2),
+        }
+        workspace = {"_id": self.ws_id, "name": "AI Lab", "members": []}
+        mock_db = MagicMock()
+        mock_db.invitations.find_one = AsyncMock(return_value=invitation)
+        mock_db.workspaces.find_one = AsyncMock(return_value=workspace)
+        mock_db.invitations.update_one = AsyncMock(return_value=SimpleNamespace(modified_count=1))
+        mock_db.workspaces.update_one = AsyncMock(return_value=SimpleNamespace(matched_count=1))
+        mock_db.notifications.update_many = AsyncMock()
+        mock_db.notifications.insert_one = AsyncMock()
+
+        with patch("app.services.invitation_service.get_database", return_value=mock_db):
+            preview = asyncio.run(invitation_service.resolve_invitation_token(token))
+            with self.assertRaises(HTTPException) as mismatch:
+                asyncio.run(invitation_service.accept_invitation_token(token, {"_id": ObjectId(), "email": "other@example.com", "email_verified": True}))
+            self.assertEqual(mismatch.exception.status_code, 403)
+            result = asyncio.run(invitation_service.accept_invitation_token(token, {
+                "_id": self.recipient_id, "email": self.recipient["email"], "email_verified": True, "name": "Invitee",
+            }))
+
+        self.assertEqual(preview["workspace_name"], "AI Lab")
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["workspace_id"], str(self.ws_id))
+        self.assertEqual(mock_db.workspaces.update_one.await_count, 1)
+
+    def test_concurrent_invitation_acceptance_only_adds_member_once(self):
+        token = "race-safe-token"
+        invitation = {
+            "_id": ObjectId(), "workspace_id": self.ws_id, "recipient_email": self.recipient["email"],
+            "token_hash": invitation_service._hash_invitation_token(token), "status": "pending",
+            "expires_at": datetime.now(timezone.utc) + timedelta(days=2),
+        }
+        mock_db = MagicMock()
+        mock_db.invitations.find_one = AsyncMock(return_value=invitation)
+        mock_db.invitations.update_one = AsyncMock(side_effect=[
+            SimpleNamespace(modified_count=1), SimpleNamespace(modified_count=0),
+        ])
+        mock_db.workspaces.find_one = AsyncMock(return_value={"_id": self.ws_id, "name": "AI Lab", "members": []})
+        mock_db.workspaces.update_one = AsyncMock(return_value=SimpleNamespace(matched_count=1))
+        mock_db.notifications.update_many = AsyncMock()
+        mock_db.notifications.insert_one = AsyncMock()
+        user = {"_id": self.recipient_id, "email": self.recipient["email"], "email_verified": True}
+
+        with patch("app.services.invitation_service.get_database", return_value=mock_db):
+            first = asyncio.run(invitation_service.accept_invitation_token(token, user))
+            with self.assertRaises(HTTPException) as duplicate:
+                asyncio.run(invitation_service.accept_invitation_token(token, user))
+
+        self.assertEqual(first["status"], "accepted")
+        self.assertEqual(duplicate.exception.status_code, 409)
+        self.assertEqual(mock_db.workspaces.update_one.await_count, 1)
+
+    def test_acceptance_rejects_user_who_is_already_a_member(self):
+        token = "already-member-token"
+        mock_db = MagicMock()
+        mock_db.invitations.find_one = AsyncMock(return_value={
+            "_id": ObjectId(), "workspace_id": self.ws_id, "recipient_email": self.recipient["email"],
+            "token_hash": invitation_service._hash_invitation_token(token), "status": "pending",
+            "expires_at": datetime.now(timezone.utc) + timedelta(days=1),
+        })
+        mock_db.invitations.update_one = AsyncMock()
+        mock_db.workspaces.find_one = AsyncMock(return_value={
+            "_id": self.ws_id, "name": "AI Lab", "members": [{"user_id": self.recipient_id}],
+        })
+        user = {"_id": self.recipient_id, "email": self.recipient["email"], "email_verified": True}
+        with patch("app.services.invitation_service.get_database", return_value=mock_db):
+            with self.assertRaises(HTTPException) as error:
+                asyncio.run(invitation_service.accept_invitation_token(token, user))
+        self.assertEqual(error.exception.status_code, 409)
+        mock_db.invitations.update_one.assert_not_awaited()
+
+    def test_expired_revoked_and_reused_invitation_tokens_cannot_be_accepted(self):
+        token = "one-time-token"
+        expired = {
+            "_id": ObjectId(), "workspace_id": self.ws_id, "recipient_email": self.recipient["email"],
+            "token_hash": invitation_service._hash_invitation_token(token), "status": "pending",
+            "expires_at": datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=1),
+        }
+        mock_db = MagicMock()
+        mock_db.invitations.find_one = AsyncMock(return_value=expired)
+        mock_db.invitations.update_one = AsyncMock()
+        user = {"_id": self.recipient_id, "email": self.recipient["email"], "email_verified": True}
+        with patch("app.services.invitation_service.get_database", return_value=mock_db):
+            with self.assertRaises(HTTPException) as expired_error:
+                asyncio.run(invitation_service.resolve_invitation_token(token))
+            self.assertEqual(expired_error.exception.status_code, 410)
+            with self.assertRaises(HTTPException):
+                asyncio.run(invitation_service.accept_invitation_token(token, user))
+
+            expired["status"] = "revoked"
+            expired["expires_at"] = datetime.now(timezone.utc) + timedelta(days=1)
+            with self.assertRaises(HTTPException) as revoked_error:
+                asyncio.run(invitation_service.resolve_invitation_token(token))
+            self.assertEqual(revoked_error.exception.status_code, 410)
+
+    def test_invitation_email_validation_rejects_invalid_address(self):
+        from app.schemas.invitations_schema import CreateInvitationRequest
+        from pydantic import ValidationError
+        with self.assertRaises(ValidationError):
+            CreateInvitationRequest(email="not-an-email")
+
+    def test_tampered_invitation_token_is_rejected(self):
+        mock_db = MagicMock()
+        mock_db.invitations.find_one = AsyncMock(return_value=None)
+        with patch("app.services.invitation_service.get_database", return_value=mock_db):
+            with self.assertRaises(HTTPException) as error:
+                asyncio.run(invitation_service.resolve_invitation_token("tampered-token"))
+        self.assertEqual(error.exception.status_code, 404)
+
     def test_resend_provider_uses_https_api_and_idempotency_key(self):
         response = MagicMock()
         response.raise_for_status = MagicMock()
@@ -243,7 +388,11 @@ class InvitationAndNotificationUnitTests(unittest.TestCase):
         mock_db = MagicMock()
         mock_db.workspaces.find_one = AsyncMock(return_value={"_id": self.ws_id, "name": "AI Lab", "owner_id": self.owner_id, "members": []})
         mock_db.users.find_one = AsyncMock(return_value=self.recipient)
-        mock_db.invitations.find_one = AsyncMock(return_value={"_id": invitation_id, "status": "pending"})
+        mock_db.invitations.find_one = AsyncMock(return_value={
+            "_id": invitation_id, "status": "pending", "recipient_email": self.recipient["email"],
+            "workspace_name": "AI Lab", "sender_name": "Owner", "sender_email": self.owner["email"],
+        })
+        mock_db.invitations.update_one = AsyncMock(return_value=SimpleNamespace(modified_count=1))
         mock_db.email_outbox.find_one = AsyncMock(return_value={
             "_id": outbox_id, "invitation_id": invitation_id, "to": self.recipient["email"],
             "subject": "Invite", "body": "Join", "status": "failed",
@@ -345,6 +494,19 @@ class InvitationAndNotificationUnitTests(unittest.TestCase):
                 asyncio.run(invitation_service.invite_teammate(str(self.ws_id), "invitee@collabai.com", self.owner))
             self.assertEqual(exc.exception.status_code, 409)
 
+    def test_inviting_existing_member_returns_conflict(self):
+        mock_db = MagicMock()
+        mock_db.workspaces.find_one = AsyncMock(return_value={
+            "_id": self.ws_id, "name": "AI Lab", "owner_id": self.owner_id,
+            "members": [{"user_id": self.recipient_id, "email": self.recipient["email"]}],
+        })
+        mock_db.users.find_one = AsyncMock(return_value=self.recipient)
+        with patch("app.services.invitation_service.get_database", return_value=mock_db):
+            with self.assertRaises(HTTPException) as error:
+                asyncio.run(invitation_service.invite_teammate(str(self.ws_id), self.recipient["email"], self.owner))
+        self.assertEqual(error.exception.status_code, 409)
+        mock_db.invitations.insert_one.assert_not_called()
+
     def test_accept_invitation_adds_member_and_updates_notification(self):
         inv_id = ObjectId()
         mock_db = MagicMock()
@@ -442,6 +604,13 @@ class WorkspaceApiSecurityTests(unittest.TestCase):
 
         res_notif = self.client.get("/api/notifications")
         self.assertEqual(res_notif.status_code, 401)
+
+    def test_unauthorized_user_cannot_create_invitation(self):
+        response = self.client.post(
+            f"/api/workspaces/{ObjectId()}/invitations",
+            json={"email": "newperson@example.com"},
+        )
+        self.assertEqual(response.status_code, 401)
 
     def test_cors_preflight_allows_both_production_origins_with_credentials(self):
         for origin in ("https://www.collabai.online", "https://collabai.online"):

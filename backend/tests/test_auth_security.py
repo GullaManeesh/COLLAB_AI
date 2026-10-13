@@ -17,22 +17,27 @@ from app.routes import auth_routes as auth_router
 from app.services import auth_service
 from app.services.auth_service import hash_session_token
 from pymongo.errors import DuplicateKeyError
+from starlette.requests import Request
+
+
+def make_csrf_request(cookie_token: str, header_token: str) -> Request:
+    return Request({
+        "type": "http", "http_version": "1.1", "method": "POST", "scheme": "https",
+        "path": "/api/workspaces", "raw_path": b"/api/workspaces", "query_string": b"",
+        "headers": [
+            (b"cookie", f"collabai_csrf={cookie_token}".encode()),
+            (b"x-csrf-token", header_token.encode()),
+        ],
+        "client": ("127.0.0.1", 12345), "server": ("localhost", 443),
+    })
 
 
 class AuthSecurityTests(unittest.TestCase):
     def test_csrf_requires_matching_cookie_and_header(self):
-        valid_request = SimpleNamespace(
-            method="POST",
-            cookies={"collabai_csrf": "csrf-value"},
-            headers={"X-CSRF-Token": "csrf-value"},
-        )
+        valid_request = make_csrf_request("csrf-value", "csrf-value")
         require_csrf_token(valid_request)
 
-        invalid_request = SimpleNamespace(
-            method="POST",
-            cookies={"collabai_csrf": "csrf-value"},
-            headers={"X-CSRF-Token": "wrong-value"},
-        )
+        invalid_request = make_csrf_request("csrf-value", "wrong-value")
         with self.assertRaises(HTTPException) as raised:
             require_csrf_token(invalid_request)
         self.assertEqual(raised.exception.status_code, 403)
@@ -122,7 +127,14 @@ class AuthSecurityTests(unittest.TestCase):
             new=AsyncMock(side_effect=PyMongoError("database unavailable")),
         ):
             with self.assertRaises(HTTPException) as raised:
-                asyncio.run(authentication.get_current_user("raw-token"))
+                asyncio.run(authentication.get_current_user(
+                    Request({
+                        "type": "http", "http_version": "1.1", "method": "GET", "scheme": "https",
+                        "path": "/", "raw_path": b"/", "query_string": b"", "headers": [],
+                        "client": ("127.0.0.1", 12345), "server": ("localhost", 443),
+                    }),
+                    "raw-token",
+                ))
         self.assertEqual(raised.exception.status_code, 503)
 
     def test_lifespan_closes_database_when_index_creation_fails(self):

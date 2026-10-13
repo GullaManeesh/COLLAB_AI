@@ -1,11 +1,12 @@
 ﻿import React, { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import api from '../api/client'
 import { AtSign, ArrowRight, Layers, CheckCircle2 } from 'lucide-react'
 
 const SetUsername = () => {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { refreshUser } = useAuth()
   const [username, setUsername] = useState('')
   const [loading, setLoading] = useState(false)
@@ -34,7 +35,9 @@ const SetUsername = () => {
     try {
       await api.patch('/auth/username', { username })
       await refreshUser()
-      navigate('/workspaces', { replace: true })
+      const requestedNext = searchParams.get('next')
+      const invitationToken = window.sessionStorage.getItem('pendingInvitationToken')
+      navigate(requestedNext === 'invitation' && invitationToken ? `/invite#${invitationToken}` : '/workspaces', { replace: true })
     } catch (err) {
       setError(err.response?.data?.detail || 'Could not save username. Please try again.')
     } finally {

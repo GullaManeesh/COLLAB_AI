@@ -111,3 +111,4 @@ class WorkspaceDetailResponse(WorkspaceResponse):
 class InvitationActionResponse(BaseModel):
     message: str
     status: str
+    workspace_id: str | None = None

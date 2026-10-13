@@ -3,10 +3,46 @@ from fastapi import APIRouter, status
 from app.controllers import invitation_controller as controller
 from app.middleware.authentication import CurrentUser
 from app.middleware.csrf import CsrfProtected
-from app.schemas.invitations_schema import CreateInvitationRequest, InvitationResponse
+from app.schemas.invitations_schema import (
+    CreateInvitationRequest,
+    InvitationListItem,
+    InvitationPreviewResponse,
+    InvitationResponse,
+    InvitationTokenRequest,
+)
 from app.schemas.workspaces import InvitationActionResponse
 
 router = APIRouter(prefix="/workspaces", tags=["Invitations"])
+
+
+@router.post("/invitations/resolve", response_model=InvitationPreviewResponse)
+async def resolve_invitation(payload: InvitationTokenRequest):
+    return await controller.resolve_invitation_controller(payload.token)
+
+
+@router.post("/invitations/accept-token", response_model=InvitationActionResponse)
+async def accept_invitation_token(
+    payload: InvitationTokenRequest,
+    user: CurrentUser,
+    _: None = CsrfProtected,
+) -> InvitationActionResponse:
+    result = await controller.accept_invitation_token_controller(payload.token, user)
+    return InvitationActionResponse(**result)
+
+
+@router.get("/{workspace_id}/invitations", response_model=list[InvitationListItem])
+async def list_invitations(workspace_id: str, user: CurrentUser):
+    return await controller.list_workspace_invitations_controller(workspace_id, user)
+
+
+@router.delete("/{workspace_id}/invitations/{invitation_id}")
+async def revoke_invitation(
+    workspace_id: str,
+    invitation_id: str,
+    user: CurrentUser,
+    _: None = CsrfProtected,
+):
+    return await controller.revoke_workspace_invitation_controller(workspace_id, invitation_id, user)
 
 
 @router.post(

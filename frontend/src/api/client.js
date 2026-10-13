@@ -40,7 +40,7 @@ api.interceptors.response.use(
         const requestUrl = error.config?.url || ''
         const isAuthEndpoint = requestUrl.startsWith('/auth/')
         const isUnauthorized = error.response?.status === 401
-        const isPublicPage = ['/login', '/register', '/signup'].includes(window.location.pathname)
+        const isPublicPage = ['/login', '/register', '/signup', '/invite'].includes(window.location.pathname)
 
         if (isUnauthorized && !isAuthEndpoint && !isPublicPage) {
             window.location.assign('/login')
