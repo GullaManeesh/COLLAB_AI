@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { AnimatePresence } from 'framer-motion'
 import NotificationBell from './NotificationBell'
 import NotificationPopover from './NotificationPopover'
+import usePolling from '../../hooks/usePolling'
 import {
   getNotifications,
   getUnreadCount,
@@ -11,19 +12,16 @@ import {
   acceptInvitation,
   declineInvitation,
 } from '../../api/notifications'
-import { INITIAL_WORKSPACE_INVITATIONS } from '../../api/fixtures/notificationFixtures'
 
 const NotificationCenter = ({ className = '', onWorkspaceChange }) => {
   const navigate = useNavigate()
   const containerRef = useRef(null)
   const bellRef = useRef(null)
+  const notificationRequestVersion = useRef(0)
 
   const [isOpen, setIsOpen] = useState(false)
-  // Default to dummy workspace invitations
-  const [notifications, setNotifications] = useState(INITIAL_WORKSPACE_INVITATIONS)
-  const [unreadCount, setUnreadCount] = useState(
-    INITIAL_WORKSPACE_INVITATIONS.filter((n) => !n.isRead).length
-  )
+  const [notifications, setNotifications] = useState([])
+  const [unreadCount, setUnreadCount] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [actionLoading, setActionLoading] = useState(false)
@@ -37,24 +35,33 @@ const NotificationCenter = ({ className = '', onWorkspaceChange }) => {
     return () => clearTimeout(timer)
   }, [])
 
-  // Attempt to sync with backend if available; otherwise gracefully keep dummy invitations
   const loadNotifications = useCallback(async () => {
+    const requestVersion = ++notificationRequestVersion.current
     try {
       const data = await getNotifications({ tab: 'inbox' })
+      if (requestVersion !== notificationRequestVersion.current) return
+      setError(null)
       if (Array.isArray(data?.notifications)) {
         setNotifications(data.notifications)
         setUnreadCount(
           data.unreadCount ?? data.notifications.filter((n) => !n.isRead).length
         )
       }
-    } catch {
-      // Backend unavailable: keep dummy invitations
+    } catch (err) {
+      if (requestVersion === notificationRequestVersion.current) {
+        setError(err?.response?.data?.detail || 'Notification service is unavailable. Retry to refresh your inbox.')
+      }
     }
   }, [])
 
   useEffect(() => {
     loadNotifications()
+    return () => {
+      notificationRequestVersion.current += 1
+    }
   }, [loadNotifications])
+
+  usePolling(loadNotifications, 15000)
 
   // Click outside listener
   useEffect(() => {
@@ -124,6 +131,7 @@ const NotificationCenter = ({ className = '', onWorkspaceChange }) => {
   // Handle Accept Invitation
   const handleAcceptInvitation = async (item) => {
     const invId = item.invitationId || item.id
+    let succeeded = false
     setActionLoading(true)
 
     // Immediate frontend update
@@ -136,19 +144,22 @@ const NotificationCenter = ({ className = '', onWorkspaceChange }) => {
 
     try {
       await acceptInvitation(invId)
+      succeeded = true
       onWorkspaceChange?.()
       window.dispatchEvent(new CustomEvent('workspaces:updated'))
-    } catch {
-      // Backend pending; UI is already updated
+    } catch (err) {
+      await loadNotifications()
+      showFeedback(err?.response?.data?.detail || 'Invitation could not be accepted. The inbox was refreshed.', 'error')
     } finally {
       setActionLoading(false)
-      showFeedback(`Accepted invitation to ${item.workspaceName || 'workspace'}`)
+      if (succeeded) showFeedback(`Accepted invitation to ${item.workspaceName || 'workspace'}`)
     }
   }
 
   // Handle Reject Invitation
   const handleRejectInvitation = async (item) => {
     const invId = item.invitationId || item.id
+    let succeeded = false
     setActionLoading(true)
 
     // Immediate frontend update
@@ -161,11 +172,13 @@ const NotificationCenter = ({ className = '', onWorkspaceChange }) => {
 
     try {
       await declineInvitation(invId)
-    } catch {
-      // Backend pending; UI is already updated
+      succeeded = true
+    } catch (err) {
+      await loadNotifications()
+      showFeedback(err?.response?.data?.detail || 'Invitation could not be rejected. The inbox was refreshed.', 'error')
     } finally {
       setActionLoading(false)
-      showFeedback(`Rejected invitation to ${item.workspaceName || 'workspace'}`)
+      if (succeeded) showFeedback(`Rejected invitation to ${item.workspaceName || 'workspace'}`)
     }
   }
 

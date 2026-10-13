@@ -59,3 +59,13 @@ async def remove_workspace(
     _: None = CsrfProtected,
 ):
     return await controller.delete_workspace_controller(workspace_id, user)
+
+
+@router.delete("/{workspace_id}/members/{member_user_id}")
+async def remove_workspace_member(
+    workspace_id: str,
+    member_user_id: str,
+    user: CurrentUser,
+    _: None = CsrfProtected,
+):
+    return await controller.remove_workspace_member_controller(workspace_id, member_user_id, user)

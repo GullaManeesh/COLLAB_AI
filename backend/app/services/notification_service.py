@@ -15,18 +15,23 @@ def serialize_notification(doc: dict) -> dict:
             "avatar": doc.get("sender_avatar"),
         }
 
+    created_at = doc.get("created_at")
+    if isinstance(created_at, datetime):
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        created_at = created_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     return {
         "id": str(doc["_id"]),
         "type": doc.get("type", "general"),
+        "event_type": doc.get("event_type"),
         "title": doc.get("title", ""),
         "message": doc.get("message", ""),
+        "action_text": doc.get("action_text"),
         "actor": actor,
         "workspace_id": str(doc["workspace_id"]) if doc.get("workspace_id") else None,
         "workspace_name": doc.get("workspace_name", ""),
         "invitation_id": str(doc["invitation_id"]) if doc.get("invitation_id") else None,
-        "created_at": doc.get("created_at", datetime.now(timezone.utc)).isoformat()
-        if isinstance(doc.get("created_at"), datetime)
-        else doc.get("created_at"),
+        "created_at": created_at,
         "read_at": doc.get("read_at").isoformat()
         if isinstance(doc.get("read_at"), datetime)
         else doc.get("read_at"),

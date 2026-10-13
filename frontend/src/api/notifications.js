@@ -5,9 +5,11 @@ import api from './client'
  * Handles both camelCase and snake_case API payloads gracefully.
  */
 export const normalizeNotification = (item = {}) => {
+  const notificationType = item.type || (item.invitation_id || item.invitationId ? 'invitation' : 'general')
   return {
     id: item.id || item._id || String(Math.random()),
-    type: item.type || (item.invitation_id || item.invitationId ? 'invitation' : 'general'),
+    type: notificationType,
+    eventType: item.event_type || item.eventType || null,
     title: item.title || '',
     message: item.message || '',
     actor: {
@@ -21,12 +23,12 @@ export const normalizeNotification = (item = {}) => {
         .slice(0, 2)
         .toUpperCase(),
     },
-    actionText: item.action_text || item.actionText || 'updated',
+    actionText: item.action_text || item.actionText || (notificationType === 'invitation' ? 'invited you to join' : 'updated'),
     targetName: item.target_name || item.targetName || item.workspace_name || item.workspaceName || '',
     workspaceId: item.workspace_id || item.workspaceId || null,
     workspaceName: item.workspace_name || item.workspaceName || 'CollabAI Workspace',
     invitationId: item.invitation_id || item.invitationId || (item.type === 'invitation' ? item.id : null),
-    createdAt: item.created_at || item.createdAt || new Date().toISOString(),
+    createdAt: item.created_at || item.createdAt || null,
     readAt: item.read_at || item.readAt || null,
     isRead: Boolean(item.is_read ?? item.isRead ?? false),
     isArchived: Boolean(item.is_archived ?? item.isArchived ?? false),

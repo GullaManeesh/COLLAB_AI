@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { formatDistanceToNow } from 'date-fns'
 import { Check, X, Clock, User } from 'lucide-react'
 
@@ -18,7 +18,7 @@ const getAvatarColor = (name = '') => {
 
 const formatRelativeTime = (isoString) => {
   try {
-    if (!isoString) return 'just now'
+    if (!isoString) return 'recently'
     return formatDistanceToNow(new Date(isoString), { addSuffix: true })
       .replace(/^about /, '')
       .replace(/^less than a minute ago/, 'just now')
@@ -35,6 +35,11 @@ const NotificationItem = ({
   onDecline,
   actionLoading = false,
 }) => {
+  const [, setClock] = useState(0)
+  useEffect(() => {
+    const timer = setInterval(() => setClock((value) => value + 1), 30000)
+    return () => clearInterval(timer)
+  }, [])
   const [imgError, setImgError] = useState(false)
   const isInvitation = notification.type === 'invitation'
   const isPending = notification.status === 'pending'

@@ -60,6 +60,13 @@ async def create_indexes() -> None:
         name="idx_invitation_recipient_status",
     )
     await _safe_create_index(
+        db.invitations,
+        [("workspace_id", 1), ("recipient_user_id", 1)],
+        unique=True,
+        partialFilterExpression={"status": "pending"},
+        name="uq_pending_workspace_recipient_invitation",
+    )
+    await _safe_create_index(
         db.notifications,
         [("recipient_user_id", 1), ("created_at", -1)],
         name="idx_notifications_recipient_created",

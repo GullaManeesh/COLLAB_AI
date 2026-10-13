@@ -15,3 +15,4 @@ class InvitationResponse(BaseModel):
     message: str
     invitation_id: str
     status: str
+    email_status: str | None = None

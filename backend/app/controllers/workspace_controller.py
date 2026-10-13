@@ -22,5 +22,9 @@ async def delete_workspace_controller(workspace_id, user):
     return await workspace_service.delete_workspace(workspace_id, user)
 
 
+async def remove_workspace_member_controller(workspace_id, member_user_id, user):
+    return await workspace_service.remove_workspace_member(workspace_id, member_user_id, user)
+
+
 async def search_teammates_controller(query, user):
     return await workspace_service.search_teammates(query, user)

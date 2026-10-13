@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
@@ -9,6 +9,7 @@ import {
   RefreshCw,
 } from 'lucide-react'
 import NotificationItem from '../components/notifications/NotificationItem'
+import usePolling from '../hooks/usePolling'
 import {
   getNotifications,
   markAsRead,
@@ -16,15 +17,16 @@ import {
   acceptInvitation,
   declineInvitation,
 } from '../api/notifications'
-import { INITIAL_WORKSPACE_INVITATIONS } from '../api/fixtures/notificationFixtures'
 
 const Notifications = () => {
   const navigate = useNavigate()
-  const [notifications, setNotifications] = useState(INITIAL_WORKSPACE_INVITATIONS)
+  const [notifications, setNotifications] = useState([])
   const [loading, setLoading] = useState(false)
   const [actionLoading, setActionLoading] = useState(false)
   const [markingAll, setMarkingAll] = useState(false)
   const [feedback, setFeedback] = useState(null)
+  const [loadError, setLoadError] = useState('')
+  const notificationRequestVersion = useRef(0)
 
   const showFeedback = (msg, type = 'success') => {
     setFeedback({ msg, type })
@@ -32,19 +34,29 @@ const Notifications = () => {
   }
 
   const loadNotifications = useCallback(async () => {
+    const requestVersion = ++notificationRequestVersion.current
     try {
       const data = await getNotifications({ tab: 'inbox' })
+      if (requestVersion !== notificationRequestVersion.current) return
+      setLoadError('')
       if (Array.isArray(data?.notifications)) {
         setNotifications(data.notifications)
       }
-    } catch {
-      // Backend unavailable; keep dummy invitations
+    } catch (err) {
+      if (requestVersion === notificationRequestVersion.current) {
+        setLoadError(err?.response?.data?.detail || 'Unable to load notifications. Retry to refresh your inbox.')
+      }
     }
   }, [])
 
   useEffect(() => {
     loadNotifications()
+    return () => {
+      notificationRequestVersion.current += 1
+    }
   }, [loadNotifications])
+
+  usePolling(loadNotifications, 15000)
 
   const unreadCount = notifications.filter((n) => !n.isRead).length
 
@@ -55,11 +67,12 @@ const Notifications = () => {
 
     try {
       await markAllAsRead()
-    } catch {
-      // Backend pending
+      showFeedback('All notifications marked as read')
+    } catch (err) {
+      await loadNotifications()
+      showFeedback(err?.response?.data?.detail || 'Could not mark notifications as read.', 'error')
     } finally {
       setMarkingAll(false)
-      showFeedback('All notifications marked as read')
     }
   }
 
@@ -70,8 +83,10 @@ const Notifications = () => {
       )
       try {
         await markAsRead(item.id)
-      } catch {
-        // Backend pending
+      } catch (err) {
+        await loadNotifications()
+        showFeedback(err?.response?.data?.detail || 'Could not mark notification as read.', 'error')
+        return
       }
     }
 
@@ -91,11 +106,12 @@ const Notifications = () => {
     try {
       await acceptInvitation(invId)
       window.dispatchEvent(new CustomEvent('workspaces:updated'))
-    } catch {
-      // Backend pending
+      showFeedback(`Accepted invitation to ${item.workspaceName || 'workspace'}`)
+    } catch (err) {
+      await loadNotifications()
+      showFeedback(err?.response?.data?.detail || 'Invitation could not be accepted.', 'error')
     } finally {
       setActionLoading(false)
-      showFeedback(`Accepted invitation to ${item.workspaceName || 'workspace'}`)
     }
   }
 
@@ -109,11 +125,12 @@ const Notifications = () => {
     )
     try {
       await declineInvitation(invId)
-    } catch {
-      // Backend pending
+      showFeedback(`Rejected invitation to ${item.workspaceName || 'workspace'}`)
+    } catch (err) {
+      await loadNotifications()
+      showFeedback(err?.response?.data?.detail || 'Invitation could not be rejected.', 'error')
     } finally {
       setActionLoading(false)
-      showFeedback(`Rejected invitation to ${item.workspaceName || 'workspace'}`)
     }
   }
 
@@ -180,7 +197,12 @@ const Notifications = () => {
 
         {/* Notification List Container */}
         <div className="bg-white border border-[#E4E4E0] rounded-2xl shadow-xs overflow-hidden">
-          {notifications.length === 0 ? (
+          {loadError ? (
+            <div className="p-8 text-center space-y-3">
+              <p role="alert" className="text-xs text-[#991B1B]">{loadError}</p>
+              <button type="button" onClick={loadNotifications} className="btn-secondary text-xs px-3 py-1.5">Retry</button>
+            </div>
+          ) : notifications.length === 0 ? (
             /* Clean Empty State */
             <div className="p-12 text-center space-y-3">
               <div className="w-12 h-12 rounded-2xl bg-[#F8F8F6] text-[#71717A] border border-[#E4E4E0] mx-auto flex items-center justify-center">

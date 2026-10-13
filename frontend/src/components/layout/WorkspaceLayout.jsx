@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { Outlet, NavLink, useParams, Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import { 
@@ -15,13 +15,15 @@ import {
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import api from '../../api/client'
+import usePolling from '../../hooks/usePolling'
 
 const WorkspaceLayout = () => {
-  const { id = 'demo-workspace' } = useParams()
+  const { id } = useParams()
   const location = useLocation()
   const navigate = useNavigate()
   const { user, logout } = useAuth()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const workspaceRequestVersion = useRef(0)
 
   const handleLogout = async () => {
     try {
@@ -49,25 +51,30 @@ const WorkspaceLayout = () => {
     members: []
   })
 
-  useEffect(() => {
-    let cancelled = false
-    const fetchWorkspace = async () => {
-      try {
-        const res = await api.get(`/api/workspaces/${id}`)
-        if (!cancelled && res.data) {
-          setWorkspace(prev => ({
-            ...prev,
-            ...res.data,
-            name: res.data.name || prev.name,
-          }))
-        }
-      } catch (err) {
-        console.error('Failed to fetch workspace details:', err)
+  const fetchWorkspace = useCallback(async () => {
+    const requestVersion = ++workspaceRequestVersion.current
+    try {
+      const res = await api.get(`/api/workspaces/${id}`)
+      if (requestVersion === workspaceRequestVersion.current && res.data) {
+        setWorkspace((prev) => ({ ...prev, ...res.data, name: res.data.name || prev.name }))
       }
+    } catch (err) {
+      if (requestVersion !== workspaceRequestVersion.current) return
+      if (err?.response?.status === 404 || err?.response?.status === 403) {
+        navigate('/workspaces', { replace: true })
+        return
+      }
+      console.error('Failed to fetch workspace details:', err)
     }
+  }, [id, navigate])
+
+  useEffect(() => {
+    setWorkspace((prev) => ({ ...prev, id, name: 'Loading…', members: [] }))
     fetchWorkspace()
-    return () => { cancelled = true }
-  }, [id])
+    return () => { workspaceRequestVersion.current += 1 }
+  }, [fetchWorkspace, id])
+
+  usePolling(fetchWorkspace, 10000)
 
   const navItems = [
     { path: `/w/${id}/chat`, label: 'Team Chat', icon: MessageSquare, badge: 'Live' },

@@ -88,9 +88,14 @@ async def team_chat_websocket(
             try:
                 raw_message = await asyncio.wait_for(
                     websocket.receive_text(),
-                    timeout=90,
+                    timeout=20,
                 )
             except asyncio.TimeoutError:
+                try:
+                    await get_workspace_for_member(workspace_id, user)
+                except HTTPException:
+                    await websocket.close(code=1008, reason="Workspace access revoked")
+                    return
                 await websocket.send_json({"type": "ping"})
                 continue
 

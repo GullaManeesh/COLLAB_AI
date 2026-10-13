@@ -3,9 +3,13 @@ from datetime import datetime, timezone
 
 from bson import ObjectId
 from fastapi import HTTPException
+from pymongo.errors import DuplicateKeyError
 
 from app.database.mongodb import get_database
 from app.services.email_service import send_email
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 async def invite_teammate(workspace_id: str, email: str, user: dict) -> dict:
@@ -63,11 +67,16 @@ async def invite_teammate(workspace_id: str, email: str, user: dict) -> dict:
         "created_at": now,
         "updated_at": now,
     }
-    result = await db.invitations.insert_one(invitation)
+    try:
+        result = await db.invitations.insert_one(invitation)
+    except DuplicateKeyError as exc:
+        raise HTTPException(status_code=409, detail="Invitation is already pending") from exc
 
-    await db.notifications.insert_one({
+    try:
+        await db.notifications.insert_one({
         "recipient_user_id": recipient["_id"],
         "type": "invitation",
+        "event_type": "invitation.created",
         "title": "Workspace invitation",
         "message": f'{user.get("name") or user.get("email")} invited you to join "{workspace["name"]}".',
         "actor": {
@@ -81,7 +90,9 @@ async def invite_teammate(workspace_id: str, email: str, user: dict) -> dict:
         "is_read": False,
         "status": "pending",
         "created_at": now,
-    })
+        })
+    except Exception:
+        logger.exception("Invitation created but notification could not be recorded invitation_id=%s", result.inserted_id)
 
     frontend_base = settings.FRONTEND_URL.rstrip("/")
     workspace_url = f"{frontend_base}/w/{workspace_id}"
@@ -98,34 +109,48 @@ async def invite_teammate(workspace_id: str, email: str, user: dict) -> dict:
 
     # Queue email in outbox
     email_result = await db.email_outbox.insert_one({
+        "invitation_id": result.inserted_id,
+        "workspace_id": ObjectId(workspace_id),
+        "recipient_user_id": recipient["_id"],
         "to": email,
         "subject": email_subject,
         "body": email_body,
         "status": "pending",
+        "attempts": 0,
         "created_at": now,
     })
 
+    delivery_status = "failed"
     try:
-        sent = await send_email(
+        await send_email(
             invitation["recipient_email"],
             email_subject,
             email_body,
         )
-        status = "sent" if sent else "skipped_smtp_not_configured"
-        await db.email_outbox.update_one(
-            {"_id": email_result.inserted_id},
-            {"$set": {"status": status}},
-        )
     except Exception as exc:
+        error_message = str(exc).replace(settings.SMTP_PASSWORD, "[redacted]") if settings.SMTP_PASSWORD else str(exc)
+        safe_error = f"{type(exc).__name__}: {error_message[:400]}"
+        logger.error("Invitation email failed invitation_id=%s recipient=%s error=%s", result.inserted_id, email, safe_error)
         await db.email_outbox.update_one(
             {"_id": email_result.inserted_id},
-            {"$set": {"status": "failed", "error": str(exc)[:500]}},
+            {"$set": {"status": "failed", "error": safe_error, "last_attempt_at": datetime.now(timezone.utc)}, "$inc": {"attempts": 1}},
         )
+    else:
+        delivery_status = "accepted_by_smtp"
+        try:
+            await db.email_outbox.update_one(
+                {"_id": email_result.inserted_id},
+                {"$set": {"status": delivery_status, "accepted_at": datetime.now(timezone.utc)}, "$inc": {"attempts": 1}},
+            )
+        except Exception:
+            # Do not mislabel SMTP acceptance as a delivery failure if only the status write failed.
+            logger.exception("SMTP accepted invitation email, but outbox status update failed invitation_id=%s", result.inserted_id)
 
     return {
         "message": "Invitation created",
         "invitation_id": str(result.inserted_id),
         "status": "pending",
+        "email_status": delivery_status,
     }
 
 
@@ -175,6 +200,23 @@ async def respond_to_invitation(
                 "$set": {"updated_at": now},
             },
         )
+        if invitation.get("sender_user_id"):
+            try:
+                await db.notifications.insert_one({
+                "recipient_user_id": invitation["sender_user_id"],
+                "type": "workspace_event",
+                "event_type": "workspace.member_added",
+                "title": "Teammate joined",
+                "message": f'{user.get("name") or user.get("email") or "A teammate"} accepted your invitation to "{invitation.get("workspace_name", "the workspace")}".',
+                "action_text": "accepted your invitation to",
+                "actor": {"name": user.get("name") or user.get("email"), "email": user.get("email"), "avatar": user.get("picture")},
+                "workspace_id": invitation["workspace_id"],
+                "workspace_name": invitation.get("workspace_name", ""),
+                "is_read": False,
+                "created_at": now,
+                })
+            except Exception:
+                logger.exception("Member added but notification could not be recorded invitation_id=%s", invitation_id)
 
     await db.notifications.update_many(
         {

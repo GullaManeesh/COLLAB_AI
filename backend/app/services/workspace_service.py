@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import logging
 
 from bson import ObjectId
 from fastapi import HTTPException
@@ -10,6 +11,8 @@ from app.schemas.workspaces import (
     UpdateWorkspaceRequest,
 )
 from app.services import invitation_service
+
+logger = logging.getLogger(__name__)
 
 
 def serialize_workspace(workspace: dict, user_id: ObjectId) -> dict:
@@ -73,18 +76,25 @@ async def create_workspace(payload: CreateWorkspaceRequest, user: dict) -> dict:
         raise
 
     # If initial members (invitees) were specified, dispatch invitations
+    invitation_results = []
     if payload.initial_members:
         for invite_email in payload.initial_members:
             try:
-                await invitation_service.invite_teammate(
+                outcome = await invitation_service.invite_teammate(
                     str(workspace_id), str(invite_email), user
                 )
+                invitation_results.append({"email": str(invite_email), **outcome})
+            except HTTPException as exc:
+                # Invitations are independent of workspace creation, but never hide their outcome.
+                invitation_results.append({"email": str(invite_email), "status": "not_created", "detail": exc.detail})
             except Exception:
-                # Do not fail workspace creation if an invitee is not yet registered or self
-                pass
+                logger.exception("Invitation processing failed workspace_id=%s", workspace_id)
+                invitation_results.append({"email": str(invite_email), "status": "not_created", "detail": "Invitation processing failed"})
 
     created = await db.workspaces.find_one({"_id": workspace_id})
-    return serialize_workspace(created, user_id)
+    response = serialize_workspace(created, user_id)
+    response["invitation_results"] = invitation_results
+    return response
 
 
 async def list_workspaces(user: dict) -> dict:
@@ -183,6 +193,30 @@ async def update_workspace(
         raise HTTPException(status_code=403, detail="Only the workspace owner can edit it")
 
     workspace = await db.workspaces.find_one({"_id": ObjectId(workspace_id)})
+    now = datetime.now(timezone.utc)
+    event_recipients = {
+        member.get("user_id") for member in workspace.get("members", [])
+        if member.get("user_id") and member.get("user_id") != user["_id"]
+    }
+    if event_recipients:
+        actor = user.get("name") or user.get("email") or "A workspace owner"
+        events = [{
+            "recipient_user_id": recipient_id,
+            "type": "workspace_event",
+            "event_type": "workspace.updated",
+            "title": "Workspace updated",
+            "message": f'{actor} updated "{workspace["name"]}".',
+            "action_text": "updated",
+            "actor": {"name": actor, "email": user.get("email"), "avatar": user.get("picture")},
+            "workspace_id": ObjectId(workspace_id),
+            "workspace_name": workspace["name"],
+            "is_read": False,
+            "created_at": now,
+        } for recipient_id in event_recipients]
+        try:
+            await db.notifications.insert_many(events)
+        except Exception:
+            logger.exception("Workspace updated but notifications could not be recorded workspace_id=%s", workspace_id)
     return serialize_workspace(workspace, user["_id"])
 
 
@@ -208,7 +242,74 @@ async def delete_workspace(workspace_id: str, user: dict) -> dict:
     await db.invitations.delete_many({"workspace_id": oid})
     await db.notifications.delete_many({"workspace_id": oid})
 
+    event_recipients = {
+        member.get("user_id") for member in workspace.get("members", [])
+        if member.get("user_id") and member.get("user_id") != user["_id"]
+    }
+    if event_recipients:
+        now = datetime.now(timezone.utc)
+        actor = user.get("name") or user.get("email") or "A workspace owner"
+        events = [{
+            "recipient_user_id": recipient_id,
+            "type": "workspace_event",
+            "event_type": "workspace.deleted",
+            "title": "Workspace deleted",
+            "message": f'{actor} deleted "{workspace["name"]}".',
+            "action_text": "deleted",
+            "actor": {"name": actor, "email": user.get("email"), "avatar": user.get("picture")},
+            "workspace_id": oid,
+            "workspace_name": workspace["name"],
+            "is_read": False,
+            "created_at": now,
+        } for recipient_id in event_recipients]
+        try:
+            await db.notifications.insert_many(events)
+        except Exception:
+            logger.exception("Workspace deleted but notifications could not be recorded workspace_id=%s", workspace_id)
+
     return {"message": "Workspace deleted successfully"}
+
+
+async def remove_workspace_member(workspace_id: str, member_user_id: str, user: dict) -> dict:
+    db = get_database()
+    if not ObjectId.is_valid(workspace_id) or not ObjectId.is_valid(member_user_id):
+        raise HTTPException(status_code=400, detail="Invalid workspace or member ID")
+    workspace_oid = ObjectId(workspace_id)
+    member_oid = ObjectId(member_user_id)
+    workspace = await db.workspaces.find_one({"_id": workspace_oid})
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    if workspace.get("owner_id") != user["_id"]:
+        raise HTTPException(status_code=403, detail="Only the workspace owner can remove members")
+    if member_oid == workspace.get("owner_id"):
+        raise HTTPException(status_code=400, detail="The workspace owner cannot be removed")
+    member = next((item for item in workspace.get("members", []) if item.get("user_id") == member_oid), None)
+    result = await db.workspaces.update_one(
+        {"_id": workspace_oid, "owner_id": user["_id"]},
+        {"$pull": {"members": {"user_id": member_oid}}, "$set": {"updated_at": datetime.now(timezone.utc)}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    if member:
+        now = datetime.now(timezone.utc)
+        actor = user.get("name") or user.get("email") or "A workspace owner"
+        try:
+            await db.notifications.insert_one({
+            "recipient_user_id": member_oid,
+            "type": "workspace_event",
+            "event_type": "workspace.member_removed",
+            "title": "Workspace access removed",
+            "message": f'{actor} removed you from "{workspace["name"]}".',
+            "action_text": "removed you from",
+            "actor": {"name": actor, "email": user.get("email"), "avatar": user.get("picture")},
+            "workspace_id": workspace_oid,
+            "workspace_name": workspace["name"],
+            "is_read": False,
+            "created_at": now,
+            })
+        except Exception:
+            logger.exception("Member removed but notification could not be recorded workspace_id=%s", workspace_id)
+    return {"message": "Workspace member removed"}
 
 
 async def search_teammates(query: str, user: dict) -> list[dict]:

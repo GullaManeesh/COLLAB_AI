@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { Users, Clock, Briefcase, Plus, Layers, LogOut, ArrowRight } from 'lucide-react'
@@ -9,6 +9,7 @@ import EditWorkspaceModal from '../components/workspaces/EditWorkspaceModal'
 import DeleteWorkspaceModal from '../components/workspaces/DeleteWorkspaceModal'
 import WorkspaceCardMenu from '../components/workspaces/WorkspaceCardMenu'
 import api from '../api/client'
+import usePolling from '../hooks/usePolling'
 
 const extractWorkspaceList = (payload) => {
   if (Array.isArray(payload)) {
@@ -83,6 +84,7 @@ const Workspaces = () => {
   const [creating, setCreating] = useState(false)
   const [loadingList, setLoadingList] = useState(true)
   const [toastMessage, setToastMessage] = useState(null)
+  const listRequestVersion = useRef(0)
 
   const showToast = useCallback((msg) => {
     setToastMessage(msg)
@@ -102,11 +104,13 @@ const Workspaces = () => {
   }
 
   const refreshWorkspaces = useCallback(async ({ withLoader = false } = {}) => {
+    const requestVersion = ++listRequestVersion.current
     if (withLoader) {
       setLoadingList(true)
     }
     try {
       const response = await api.get('/api/workspaces')
+      if (requestVersion !== listRequestVersion.current) return null
       const items = extractWorkspaceList(response.data)
         .map(normalizeWorkspace)
         .filter((ws) => ws.id)
@@ -129,9 +133,12 @@ const Workspaces = () => {
     }
     window.addEventListener('workspaces:updated', handleWorkspacesUpdated)
     return () => {
+      listRequestVersion.current += 1
       window.removeEventListener('workspaces:updated', handleWorkspacesUpdated)
     }
   }, [refreshWorkspaces])
+
+  usePolling(refreshWorkspaces, 10000)
 
   const handleCreate = async ({ name, description, invitees }) => {
     if (creating) return
@@ -161,7 +168,12 @@ const Workspaces = () => {
 
       setShowCreateModal(false)
       setSubmitError('')
-      showToast(`Created workspace "${name}"`)
+      const invitationResults = response?.data?.invitation_results || []
+      const notCreated = invitationResults.filter((item) => item.status !== 'pending').length
+      const emailFailed = invitationResults.filter((item) => item.status === 'pending' && item.email_status !== 'accepted_by_smtp').length
+      showToast(notCreated || emailFailed
+        ? `Workspace created. ${notCreated} invitation(s) not created; ${emailFailed} email(s) failed.`
+        : `Created workspace "${name}"`)
     } catch (error) {
       setSubmitError(getApiErrorMessage(error))
     } finally {
