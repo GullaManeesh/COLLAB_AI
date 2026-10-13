@@ -443,6 +443,20 @@ class WorkspaceApiSecurityTests(unittest.TestCase):
         res_notif = self.client.get("/api/notifications")
         self.assertEqual(res_notif.status_code, 401)
 
+    def test_cors_preflight_allows_both_production_origins_with_credentials(self):
+        for origin in ("https://www.collabai.online", "https://collabai.online"):
+            response = self.client.options(
+                "/api/workspaces",
+                headers={
+                    "Origin": origin,
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "content-type,x-csrf-token",
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers.get("access-control-allow-origin"), origin)
+            self.assertEqual(response.headers.get("access-control-allow-credentials"), "true")
+
     def test_mutation_without_csrf_rejected(self):
         # Even with mock authenticated user, missing CSRF token returns 403
         from app.middleware.authentication import get_current_user
