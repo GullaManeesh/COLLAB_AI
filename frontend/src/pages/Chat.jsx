@@ -51,6 +51,7 @@ export default function Chat() {
   const [showScrollButton, setShowScrollButton] = useState(false)
   const [agentStatus, setAgentStatus] = useState('')
   const [commandOptionActive, setCommandOptionActive] = useState(false)
+  const [messageInputScrollLeft, setMessageInputScrollLeft] = useState(0)
   const [dismissCommandSuggestion, setDismissCommandSuggestion] = useState(false)
   const activeWorkspaceIdRef = useRef(workspaceId)
 
@@ -695,26 +696,49 @@ export default function Chat() {
           </div>
         )}
         <form onSubmit={handleSend} className="flex items-center gap-2">
-          <input
-            ref={messageInputRef}
-            type="text"
-            value={content}
-            onChange={(event) => {
-              setContent(event.target.value)
-              contentRef.current = event.target.value
-              setDismissCommandSuggestion(false)
-              setCommandOptionActive(false)
-            }}
-            onKeyDown={handleCommandInputKeyDown}
-            maxLength={5000}
-            placeholder="Message your team... Type @summarizer to summarize workspace context"
-            aria-label="Message your teammates"
-            aria-autocomplete="list"
-            aria-expanded={showCommandSuggestion}
-            aria-controls={showCommandSuggestion ? 'chat-command-suggestions' : undefined}
-            aria-activedescendant={showCommandSuggestion && commandOptionActive ? 'chat-command-suggestion-summarizer' : undefined}
-            className="min-w-0 flex-1 rounded-xl border border-[#E4E4E0] bg-[#F8F8F6] px-4 py-3 text-sm outline-none transition focus:border-[#18181B] focus:ring-2 focus:ring-black/10"
-          />
+          <div className="relative min-w-0 flex-1 rounded-xl bg-[#F8F8F6]">
+            {content && (
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 flex items-center overflow-hidden rounded-xl px-4 py-3 text-sm text-[#18181B]"
+              >
+                <span
+                  className="whitespace-pre"
+                  style={{ transform: `translateX(-${messageInputScrollLeft}px)` }}
+                >
+                  {content.match(/^@summarizer(?=\s|$)/i) ? (
+                    <>
+                      <span className="font-semibold text-[#C2410C]">
+                        {content.match(/^@summarizer(?=\s|$)/i)[0]}
+                      </span>
+                      {content.slice(content.match(/^@summarizer(?=\s|$)/i)[0].length)}
+                    </>
+                  ) : content}
+                </span>
+              </div>
+            )}
+            <input
+              ref={messageInputRef}
+              type="text"
+              value={content}
+              onScroll={(event) => setMessageInputScrollLeft(event.currentTarget.scrollLeft)}
+              onChange={(event) => {
+                setContent(event.target.value)
+                contentRef.current = event.target.value
+                setDismissCommandSuggestion(false)
+                setCommandOptionActive(false)
+              }}
+              onKeyDown={handleCommandInputKeyDown}
+              maxLength={5000}
+              placeholder="Message your team... Type @summarizer to summarize workspace context"
+              aria-label="Message your teammates"
+              aria-autocomplete="list"
+              aria-expanded={showCommandSuggestion}
+              aria-controls={showCommandSuggestion ? 'chat-command-suggestions' : undefined}
+              aria-activedescendant={showCommandSuggestion && commandOptionActive ? 'chat-command-suggestion-summarizer' : undefined}
+              className="relative w-full min-w-0 rounded-xl border border-[#E4E4E0] bg-transparent px-4 py-3 text-sm text-transparent caret-[#18181B] outline-none transition placeholder:text-[#71717A] selection:bg-[#D4D4D8]/50 selection:text-transparent focus:border-[#18181B] focus:ring-2 focus:ring-black/10"
+            />
+          </div>
 
           <button
             type="submit"
