@@ -595,7 +595,20 @@ export default function Chat() {
                         </div>
                       )}
                       <div className="chat-markdown w-full min-w-0 break-words select-text">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            table: ({ node, ...props }) => (
+                              <div className="chat-markdown-table-wrap">
+                                <table {...props} />
+                              </div>
+                            ),
+                            th: ({ node, ...props }) => <th className="chat-markdown-th" {...props} />,
+                            td: ({ node, ...props }) => <td className="chat-markdown-td" {...props} />,
+                          }}
+                        >
+                          {message.content}
+                        </ReactMarkdown>
                       </div>
                       {(message.explanation || message.limitations?.length > 0) && (
                         <div className="mt-4 rounded-lg border border-[#E4E4E0] bg-[#F8F8F6] px-3 py-2.5 text-xs leading-relaxed text-[#52525B]">
