@@ -50,25 +50,39 @@ async def upload_document_route(
             detail="Supported formats: PDF, DOCX, TXT, and MD",
         )
 
-    file_bytes = await file.read(MAX_UPLOAD_BYTES + 1)
-    await file.close()
+    file_size = file.size
+    file_source = file.file
+    if file_size is None:
+        # Older Starlette versions may not expose UploadFile.size. In that
+        # fallback, keep the existing strict limit while reading at most 10 MB.
+        file_bytes = await file.read(MAX_UPLOAD_BYTES + 1)
+        file_size = len(file_bytes)
+        file_source = file_bytes
 
-    if not file_bytes:
+    if file_size == 0:
+        await file.close()
         raise HTTPException(status_code=400, detail="The file is empty")
 
-    if len(file_bytes) > MAX_UPLOAD_BYTES:
+    if file_size > MAX_UPLOAD_BYTES:
+        await file.close()
         raise HTTPException(
             status_code=413,
             detail="Maximum file size is 10 MB",
         )
 
-    result = await upload_document(
-        workspace_id=workspace_id,
-        filename=filename,
-        content_type=file.content_type or "application/octet-stream",
-        file_bytes=file_bytes,
-        user=user,
-    )
+    if file_source is file.file:
+        await file.seek(0)
+    try:
+        result = await upload_document(
+            workspace_id=workspace_id,
+            filename=filename,
+            content_type=file.content_type or "application/octet-stream",
+            file_bytes=file_source,
+            file_size=file_size,
+            user=user,
+        )
+    finally:
+        await file.close()
     return DocumentResponse(**result)
 
 

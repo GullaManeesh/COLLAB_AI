@@ -4,14 +4,44 @@ import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from bson import ObjectId
 from fastapi import HTTPException
+from starlette.datastructures import Headers, UploadFile
 from pymongo.errors import PyMongoError
 
+from app.routes import document_routes
 from app.services import document_service, embedding_service
+
+
+def make_text_pdf(text):
+    escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    content = f"BT /F1 12 Tf 50 740 Td ({escaped}) Tj ET".encode("ascii")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length " + str(len(content)).encode("ascii") + b" >>\nstream\n" + content + b"\nendstream",
+    ]
+    pdf = b"%PDF-1.4\n"
+    offsets = [0]
+    for index, obj in enumerate(objects, start=1):
+        offsets.append(len(pdf))
+        pdf += f"{index} 0 obj\n".encode("ascii") + obj + b"\nendobj\n"
+    xref_offset = len(pdf)
+    pdf += f"xref\n0 {len(offsets)}\n0000000000 65535 f \n".encode("ascii")
+    for offset in offsets[1:]:
+        pdf += f"{offset:010d} 00000 n \n".encode("ascii")
+    pdf += (
+        f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\n"
+        f"startxref\n{xref_offset}\n%%EOF"
+    ).encode("ascii")
+    return pdf
 
 
 class EmbeddingServiceTests(unittest.TestCase):
@@ -151,12 +181,44 @@ class DocumentIndexingTests(unittest.IsolatedAsyncioTestCase):
         self.document_id = ObjectId()
         self.workspace = {"_id": self.workspace_id}
         self.user = {"_id": ObjectId(), "name": "Uploader"}
+        self.persisted_chunks = []
+
+        async def insert_chunks(chunks, ordered=True):
+            self.persisted_chunks.extend(chunks)
+            return SimpleNamespace(inserted_ids=[ObjectId() for _ in chunks])
+
+        async def delete_chunks(query):
+            self.persisted_chunks = [
+                chunk for chunk in self.persisted_chunks
+                if chunk["document_id"] != query["document_id"]
+            ]
+
+        async def count_chunks(query):
+            return sum(
+                chunk["document_id"] == query["document_id"]
+                for chunk in self.persisted_chunks
+            )
+
+        class AsyncCursor:
+            def __init__(self, items):
+                self.items = items
+
+            def __aiter__(self):
+                async def items():
+                    for item in self.items:
+                        yield item
+                return items()
+
         self.chunks_collection = SimpleNamespace(
-            insert_many=AsyncMock(), delete_many=AsyncMock()
+            insert_many=AsyncMock(side_effect=insert_chunks),
+            delete_many=AsyncMock(side_effect=delete_chunks),
+            count_documents=AsyncMock(side_effect=count_chunks),
         )
         self.documents_collection = SimpleNamespace(
             insert_one=AsyncMock(return_value=SimpleNamespace(inserted_id=self.document_id)),
             update_one=AsyncMock(),
+            update_many=AsyncMock(return_value=SimpleNamespace(modified_count=0)),
+            find=Mock(return_value=AsyncCursor([])),
         )
         self.workspaces_collection = SimpleNamespace(update_one=AsyncMock())
         self.db = SimpleNamespace(
@@ -167,9 +229,11 @@ class DocumentIndexingTests(unittest.IsolatedAsyncioTestCase):
         self.patches = [
             patch.object(document_service, "get_database", return_value=self.db),
             patch.object(document_service, "verify_workspace_access", new=AsyncMock(return_value=self.workspace)),
-            patch.object(document_service, "extract_text", return_value=[{"page": 1, "text": "text"}]),
-            patch.object(document_service, "chunk_text", return_value=[{"text": "text", "page": 1}]),
-            patch.object(document_service, "async_generate_embeddings", new=AsyncMock(return_value=[[0.1] * 384])),
+            patch.object(
+                document_service,
+                "async_generate_embeddings",
+                new=AsyncMock(side_effect=lambda texts: [[0.1] * 384 for _ in texts]),
+            ),
         ]
         for active_patch in self.patches:
             active_patch.start()
@@ -190,6 +254,106 @@ class DocumentIndexingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored[0]["embedding_model"], embedding_service.MODEL_ID)
         self.assertEqual(self.documents_collection.update_one.await_args.args[1]["$set"]["status"], "ready")
 
+    async def test_small_pdf_is_extracted_and_indexed_successfully(self):
+        pdf_bytes = make_text_pdf("A small PDF with useful searchable content.")
+        pdf_stream = BytesIO(pdf_bytes)
+        result = await document_service.upload_document(
+            str(self.workspace_id), "small.pdf", "application/pdf", pdf_stream, self.user,
+            file_size=len(pdf_bytes),
+        )
+
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["chunk_count"], 1)
+        self.assertEqual(self.persisted_chunks[0]["page"], 1)
+        self.assertEqual(len(self.persisted_chunks[0]["embedding"]), 384)
+
+    async def test_upload_route_passes_spooled_stream_without_copying_entire_pdf(self):
+        from tempfile import SpooledTemporaryFile
+
+        spool = SpooledTemporaryFile()
+        spool.write(b"%PDF sample")
+        spool.seek(0)
+        upload = UploadFile(
+            file=spool,
+            size=11,
+            filename="sample.pdf",
+            headers=Headers({"content-type": "application/pdf"}),
+        )
+        expected = {
+            "id": str(self.document_id),
+            "workspace_id": str(self.workspace_id),
+            "filename": "sample.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": 11,
+            "status": "ready",
+            "chunk_count": 1,
+            "created_at": datetime.now(timezone.utc),
+        }
+
+        with patch.object(document_routes, "upload_document", new=AsyncMock(return_value=expected)) as upload_service:
+            response = await document_routes.upload_document_route(
+                str(self.workspace_id), self.user, None, upload
+            )
+
+        self.assertEqual(response.status, "ready")
+        self.assertIs(upload_service.await_args.kwargs["file_bytes"], spool)
+        self.assertEqual(upload_service.await_args.kwargs["file_size"], 11)
+        self.assertTrue(spool.closed)
+
+    async def test_larger_pdf_is_processed_in_bounded_embedding_batches(self):
+        pdf_bytes = make_text_pdf("Evidence from a large PDF page. " * 1500)
+        async def embed_batch(texts):
+            return [[0.1] * 384 for _ in texts]
+
+        embedder = document_service.async_generate_embeddings
+        embedder.side_effect = embed_batch
+
+        result = await document_service.upload_document(
+            str(self.workspace_id), "large.pdf", "application/pdf", pdf_bytes, self.user
+        )
+
+        self.assertEqual(result["status"], "ready")
+        self.assertGreater(result["chunk_count"], document_service.DOCUMENT_EMBEDDING_BATCH_SIZE)
+        embedding_batch_sizes = [len(call.args[0]) for call in embedder.await_args_list]
+        self.assertGreater(len(embedding_batch_sizes), 1)
+        self.assertLessEqual(max(embedding_batch_sizes), document_service.DOCUMENT_EMBEDDING_BATCH_SIZE)
+        self.assertEqual(sum(embedding_batch_sizes), result["chunk_count"])
+        self.assertEqual(
+            [len(call.args[0]) for call in self.chunks_collection.insert_many.await_args_list],
+            embedding_batch_sizes,
+        )
+
+    async def test_extraction_failure_marks_document_failed(self):
+        with patch.object(
+            document_service,
+            "iter_document_chunks",
+            side_effect=ValueError("No extractable text was found in this document"),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await document_service.upload_document(
+                    str(self.workspace_id), "empty.pdf", "application/pdf", b"pdf", self.user
+                )
+
+        self.assertEqual(raised.exception.status_code, 422)
+        self.assertEqual(self.documents_collection.update_one.await_args_list[-1].args[1]["$set"]["status"], "failed")
+        self.assertEqual(self.documents_collection.update_one.await_args_list[-1].args[1]["$set"]["chunk_count"], 0)
+
+    async def test_embedding_failure_cleans_chunks_and_marks_document_failed(self):
+        document_service.async_generate_embeddings.side_effect = RuntimeError("provider detail must not leak")
+
+        with self.assertRaises(HTTPException) as raised:
+            await document_service.upload_document(
+                str(self.workspace_id), "notes.txt", "text/plain", b"text", self.user
+            )
+
+        self.assertEqual(raised.exception.status_code, 500)
+        self.assertEqual(raised.exception.detail, "Document processing failed. Please retry the upload.")
+        self.chunks_collection.delete_many.assert_awaited()
+        failure_update = self.documents_collection.update_one.await_args_list[-1].args[1]["$set"]
+        self.assertEqual(failure_update["status"], "failed")
+        self.assertEqual(failure_update["chunk_count"], 0)
+        self.assertNotIn("provider detail", failure_update["error"])
+
     async def test_mongodb_chunk_insertion_failure_marks_document_failed(self):
         self.chunks_collection.insert_many.side_effect = PyMongoError("Mongo insert failed")
 
@@ -198,11 +362,70 @@ class DocumentIndexingTests(unittest.IsolatedAsyncioTestCase):
                 str(self.workspace_id), "notes.txt", "text/plain", b"text", self.user
             )
 
-        self.assertEqual(raised.exception.status_code, 500)
-        self.chunks_collection.delete_many.assert_awaited_once_with({"document_id": self.document_id})
+        self.assertEqual(raised.exception.status_code, 503)
+        self.chunks_collection.delete_many.assert_awaited()
         failed_update = self.documents_collection.update_one.await_args_list[-1].args[1]["$set"]
         self.assertEqual(failed_update["status"], "failed")
-        self.assertIn("Mongo insert failed", failed_update["error"])
+        self.assertIn("could not be saved completely", failed_update["error"])
+
+    async def test_incomplete_chunk_persistence_never_marks_document_ready(self):
+        self.chunks_collection.count_documents.side_effect = None
+        self.chunks_collection.count_documents.return_value = 0
+
+        with self.assertRaises(HTTPException):
+            await document_service.upload_document(
+                str(self.workspace_id), "notes.txt", "text/plain", b"text", self.user
+            )
+
+        failed_update = self.documents_collection.update_one.await_args_list[-1].args[1]["$set"]
+        self.assertEqual(failed_update["status"], "failed")
+        self.assertEqual(failed_update["chunk_count"], 0)
+        self.assertNotIn("ready", [call.args[1]["$set"].get("status") for call in self.documents_collection.update_one.await_args_list])
+
+    async def test_retry_for_same_document_id_cleans_previous_chunks_and_restarts_indices(self):
+        for _ in range(2):
+            result = await document_service.upload_document(
+                str(self.workspace_id), "notes.txt", "text/plain", b"text", self.user
+            )
+            self.assertEqual(result["status"], "ready")
+
+        self.assertEqual(self.chunks_collection.delete_many.await_count, 2)
+        self.assertEqual(len(self.persisted_chunks), 1)
+        self.assertEqual(self.persisted_chunks[0]["chunk_index"], 0)
+
+    async def test_startup_recovery_marks_only_stale_processing_documents_failed(self):
+        result = await document_service.recover_interrupted_document_uploads()
+
+        self.assertEqual(result, 0)
+        query = self.documents_collection.find.call_args.args[0]
+        self.assertEqual(query["status"], "processing")
+
+    async def test_startup_recovery_cleans_chunks_for_a_stale_failed_document(self):
+        stale_time = datetime.now(timezone.utc) - timedelta(hours=1)
+        self.documents_collection.find.return_value = self._async_cursor([
+            {"_id": self.document_id, "updated_at": stale_time},
+        ])
+        self.documents_collection.update_one.return_value = SimpleNamespace(modified_count=1)
+
+        recovered = await document_service.recover_interrupted_document_uploads()
+
+        self.assertEqual(recovered, 1)
+        query = self.documents_collection.update_one.await_args.args[0]
+        update = self.documents_collection.update_one.await_args.args[1]
+        self.assertEqual(query["status"], "processing")
+        self.assertEqual(update["$set"]["status"], "failed")
+        self.assertIn("Upload the document again", update["$set"]["error"])
+        self.chunks_collection.delete_many.assert_awaited_with({"document_id": self.document_id})
+
+    @staticmethod
+    def _async_cursor(items):
+        class Cursor:
+            def __aiter__(self):
+                async def iterate():
+                    for item in items:
+                        yield item
+                return iterate()
+        return Cursor()
 
     async def test_retrieval_embeds_query_and_scores_stored_384_dimensional_vectors(self):
         class AsyncCursor:

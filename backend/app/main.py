@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -19,13 +20,23 @@ from app.routes.document_routes import router as document_router
 from app.routes.chat_routes import router as chat_router
 from app.routes.agent_routes import router as agent_router, recover_stale_agent_runs
 from app.services.embedding_service import initialize_embedding_model_async
+from app.services.document_service import (
+    monitor_interrupted_document_uploads,
+    recover_interrupted_document_uploads,
+)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    document_recovery_task = None
     try:
         await connect_to_mongodb()
         await create_indexes()
+        await recover_interrupted_document_uploads()
+        document_recovery_task = asyncio.create_task(
+            monitor_interrupted_document_uploads(),
+            name="document-upload-recovery",
+        )
         await recover_stale_agent_runs()
         # Warm the local ONNX model once per process. The API remains available
         # if model download/cache access fails; upload requests keep documents
@@ -33,6 +44,12 @@ async def lifespan(app: FastAPI):
         await initialize_embedding_model_async()
         yield
     finally:
+        if document_recovery_task is not None:
+            document_recovery_task.cancel()
+            try:
+                await document_recovery_task
+            except asyncio.CancelledError:
+                pass
         await close_mongodb_connection()
 
 

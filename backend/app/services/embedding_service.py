@@ -8,6 +8,7 @@ import threading
 import time
 
 from app.schemas.documents import EMBEDDING_DIMENSIONS
+from app.services.memory_diagnostics import rss_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +49,11 @@ def initialize_embedding_model(*, force: bool = False) -> bool:
             _MODEL = TextEmbedding(model_name=MODEL_ID, cache_dir=cache_dir)
             _MODEL_ERROR = None
             logger.info(
-                "Loaded local FastEmbed model=%s dimensions=%d cache=%s",
+                "Loaded local FastEmbed model=%s dimensions=%d cache=%s rss_mb=%s",
                 MODEL_ID,
                 EMBEDDING_DIMENSIONS,
                 cache_dir or "FastEmbed default",
+                rss_log_value(),
             )
             return True
         except Exception as exc:
