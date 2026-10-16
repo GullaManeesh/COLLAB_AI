@@ -1,8 +1,10 @@
 """Local FastEmbed inference for the workspace document vectors."""
 
+import asyncio
 import logging
 import math
 import os
+import threading
 import time
 
 from app.schemas.documents import EMBEDDING_DIMENSIONS
@@ -14,6 +16,8 @@ _MODEL = None
 _MODEL_ERROR: Exception | None = None
 _LAST_FAILURE_AT = 0.0
 _RETRY_AFTER_SECONDS = 60.0
+_MODEL_LOCK = threading.Lock()
+_INFERENCE_LOCK = threading.Lock()
 
 
 class EmbeddingModelUnavailableError(RuntimeError):
@@ -24,38 +28,47 @@ def initialize_embedding_model(*, force: bool = False) -> bool:
     """Load the ONNX model once; return False when it is unavailable."""
     global _MODEL, _MODEL_ERROR, _LAST_FAILURE_AT
 
-    if _MODEL is not None:
-        return True
-    if (
-        _MODEL_ERROR is not None
-        and not force
-        and time.monotonic() - _LAST_FAILURE_AT < _RETRY_AFTER_SECONDS
-    ):
-        return False
+    # FastEmbed initialization can download and construct ONNX state. Protect
+    # the singleton so simultaneous startup/request callers cannot create
+    # multiple model instances in one process.
+    with _MODEL_LOCK:
+        if _MODEL is not None:
+            return True
+        if (
+            _MODEL_ERROR is not None
+            and not force
+            and time.monotonic() - _LAST_FAILURE_AT < _RETRY_AFTER_SECONDS
+        ):
+            return False
 
-    try:
-        from fastembed import TextEmbedding
+        try:
+            from fastembed import TextEmbedding
 
-        cache_dir = os.getenv("FASTEMBED_CACHE_PATH") or None
-        _MODEL = TextEmbedding(model_name=MODEL_ID, cache_dir=cache_dir)
-        _MODEL_ERROR = None
-        logger.info(
-            "Loaded local FastEmbed model=%s dimensions=%d cache=%s",
-            MODEL_ID,
-            EMBEDDING_DIMENSIONS,
-            cache_dir or "FastEmbed default",
-        )
-        return True
-    except Exception as exc:
-        _MODEL = None
-        _MODEL_ERROR = exc
-        _LAST_FAILURE_AT = time.monotonic()
-        logger.exception(
-            "Could not initialize local FastEmbed model=%s cache=%s; check outbound DNS/network and model cache",
-            MODEL_ID,
-            os.getenv("FASTEMBED_CACHE_PATH") or "FastEmbed default",
-        )
-        return False
+            cache_dir = os.getenv("FASTEMBED_CACHE_PATH") or None
+            _MODEL = TextEmbedding(model_name=MODEL_ID, cache_dir=cache_dir)
+            _MODEL_ERROR = None
+            logger.info(
+                "Loaded local FastEmbed model=%s dimensions=%d cache=%s",
+                MODEL_ID,
+                EMBEDDING_DIMENSIONS,
+                cache_dir or "FastEmbed default",
+            )
+            return True
+        except Exception as exc:
+            _MODEL = None
+            _MODEL_ERROR = exc
+            _LAST_FAILURE_AT = time.monotonic()
+            logger.exception(
+                "Could not initialize local FastEmbed model=%s cache=%s; check outbound DNS/network and model cache",
+                MODEL_ID,
+                os.getenv("FASTEMBED_CACHE_PATH") or "FastEmbed default",
+            )
+            return False
+
+
+async def initialize_embedding_model_async(*, force: bool = False) -> bool:
+    """Initialize FastEmbed off the event loop during application startup."""
+    return await asyncio.to_thread(initialize_embedding_model, force=force)
 
 
 def _get_model():
@@ -100,9 +113,22 @@ def generate_embeddings(texts: list[str]) -> list[list[float]]:
     if any(not text.strip() for text in texts):
         raise ValueError("Cannot embed empty text")
 
-    vectors = list(_get_model().embed(texts))
+    # The installed FastEmbed/ONNX stack is synchronous. Serialize calls to
+    # shared model state; async callers are also moved to a worker thread below.
+    with _INFERENCE_LOCK:
+        vectors = list(_get_model().embed(texts))
     if len(vectors) != len(texts):
         raise RuntimeError(
             f"Embedding count mismatch: expected {len(texts)}, received {len(vectors)}"
         )
     return [_normalize(vector) for vector in vectors]
+
+
+async def async_generate_embedding(text: str) -> list[float]:
+    """Generate a query vector without blocking FastAPI's event loop."""
+    return await asyncio.to_thread(generate_embedding, text)
+
+
+async def async_generate_embeddings(texts: list[str]) -> list[list[float]]:
+    """Generate document vectors off-loop through the serialized model path."""
+    return await asyncio.to_thread(generate_embeddings, texts)

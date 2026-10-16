@@ -12,8 +12,8 @@ from app.services.document_processing_service import (
 from app.services.embedding_service import (
     EmbeddingModelUnavailableError,
     MODEL_ID,
-    generate_embedding,
-    generate_embeddings,
+    async_generate_embedding,
+    async_generate_embeddings,
 )
 
 
@@ -123,7 +123,7 @@ async def upload_document(
 
         # 4. Dense local FastEmbed vectors (BAAI/bge-small-en-v1.5, 384 dims)
         chunk_texts = [c["text"] for c in chunks]
-        embeddings = generate_embeddings(chunk_texts)
+        embeddings = await async_generate_embeddings(chunk_texts)
 
         if len(embeddings) != len(chunks):
             raise RuntimeError("Embeddings count mismatch with chunk count")
@@ -327,7 +327,7 @@ async def search_workspace_chunks(
     if not query:
         return {"query": query, "results": [], "total": 0}
 
-    query_vector = generate_embedding(query)
+    query_vector = await async_generate_embedding(query)
 
     ready_documents = [
         document["_id"]
