@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from pymongo.errors import DuplicateKeyError
 
 from app import main
+from app.agents.context.context_engine import select_project_plan_sources
 from app.agents.context import context_engine
 from app.agents.context.evidence import assess_evidence
 from app.agents.context.source_resolver import resolve_document_reference
@@ -80,6 +81,51 @@ class SummarizerIntentAndOutputTests(unittest.IsolatedAsyncioTestCase):
         messages = build_messages(topic, [{"citation_id": "doc:x", "source_type": "document", "title": "paper", "text": "Methods"}])
         self.assertIn("methodology and experiments", messages[1]["content"])
         self.assertIn("requested topic or section", messages[0]["content"])
+
+    def test_project_plan_questions_are_distinguished_from_related_work_questions(self):
+        plan = interpret_request("@summarizer what all agents we are including in our collabai project")
+        related_work = interpret_request("@summarizer what frameworks does the paper discuss in related work?")
+
+        self.assertEqual(plan.operation, SummaryOperation.PROJECT_PLAN)
+        self.assertEqual(related_work.operation, SummaryOperation.QUESTION)
+
+    def test_related_work_frameworks_are_not_project_decisions(self):
+        paper = {
+            "citation_id": "doc:paper",
+            "source_type": "document",
+            "title": "Multi-Agent Systems Survey.pdf",
+            "text": (
+                "Related Work: Embodied LLM Agents, AutoGen, CAMEL, MetaGPT, MemGPT, "
+                "Self-RAG, Reflexion, ReAct, and Self-Refine are prior approaches."
+            ),
+        }
+        team_decision = {
+            "citation_id": "chat:plan",
+            "source_type": "chat_message",
+            "title": "Workspace member",
+            "text": (
+                "We decided our CollabAI project will include Router, Research, Explainer, "
+                "and Summarizer agents. Summarizer is implemented; the others are planned."
+            ),
+        }
+
+        selected = select_project_plan_sources([paper, team_decision])
+
+        self.assertEqual([source["citation_id"] for source in selected], ["chat:plan"])
+        self.assertEqual(selected[0]["evidence_role"], "project_decision")
+        messages = build_messages(interpret_request("@summarizer which agents are planned for our project?"), selected)
+        self.assertIn("Research-paper background", messages[0]["content"])
+        self.assertIn('"evidence_role": "project_decision"', messages[1]["content"])
+
+    def test_project_plan_request_with_no_decision_source_returns_no_eligible_evidence(self):
+        paper = {
+            "citation_id": "doc:paper",
+            "source_type": "document",
+            "title": "Multi-Agent Systems Survey.pdf",
+            "text": "Related Work discusses AutoGen and MetaGPT as external frameworks.",
+        }
+
+        self.assertEqual(select_project_plan_sources([paper]), [])
 
     def test_response_schema_and_citation_validation_are_fail_closed(self):
         self.assertEqual(response_format("other-model"), {"type": "json_object"})

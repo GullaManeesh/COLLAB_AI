@@ -20,6 +20,65 @@ MAX_DOCUMENT_CANDIDATES = 1500
 MAX_SOURCE_CHARS = 2400
 MAX_TOTAL_CONTEXT_CHARS = 18000
 MAX_WHOLE_DOCUMENT_CHUNKS = settings.SUMMARIZER_MAX_DOCUMENT_CHUNKS
+_PROJECT_CONTEXT = re.compile(
+    r"\b(?:our|this|the)\s+(?:collabai\s+)?(?:project|implementation|roadmap|system)\b|"
+    r"\bcollabai\s+(?:project|implementation|roadmap|system)\b|"
+    r"\bproject\s+(?:plan|roadmap|implementation)\b",
+    re.I,
+)
+_TEAM_DECISION = re.compile(
+    r"\b(?:we|our\s+team|this\s+project|our\s+project|the\s+project)\s+"
+    r"(?:have\s+)?(?:plan(?:s)?(?:\s+to)?|intend(?:s)?\s+to|will|are\s+"
+    r"(?:including|implementing|building)|selected|decided|chosen|include(?:s)?|"
+    r"use(?:s|d)?|implement(?:ed|ing)?|build(?:s|ing)?|complete(?:d)?|"
+    r"in\s+progress)\b|"
+    r"\b(?:implementation\s+plan|project\s+roadmap|selected\s+for\s+implementation|"
+    r"planned\s+for\s+(?:the\s+)?project|implemented\s+in\s+(?:the\s+)?project|"
+    r"in\s+progress\s+(?:on|for)\s+(?:the\s+)?project)\b",
+    re.I,
+)
+_PLAN_STATUS = re.compile(
+    r"\b(?:planned|in\s+progress|implemented|completed)\b",
+    re.I,
+)
+_RELATED_WORK = re.compile(
+    r"\b(?:related\s+work|prior\s+work|literature\s+review|background|existing\s+approaches|"
+    r"survey\s+of\s+(?:existing|prior|related))\b",
+    re.I,
+)
+
+
+def _project_source_role(source: dict) -> str:
+    """Classify evidence for plan questions without promoting research mentions to decisions."""
+    title = source.get("title") or ""
+    text = source.get("text") or ""
+    normalized_title = re.sub(r"[_-]+", " ", title)
+    combined = f"{normalized_title}\n{text}"
+    is_chat_decision = source.get("source_type") == "chat_message"
+    has_project_anchor = bool(_PROJECT_CONTEXT.search(combined))
+    title_is_plan = bool(re.search(
+        r"\b(?:project|collabai)\b.{0,60}\b(?:plan|roadmap|implementation|architecture|decision)\b",
+        normalized_title,
+        re.I,
+    ))
+    has_decision = bool(_TEAM_DECISION.search(text)) or (
+        title_is_plan and bool(_PLAN_STATUS.search(text))
+    )
+    is_related_work = bool(_RELATED_WORK.search(combined))
+    if has_decision and (is_chat_decision or has_project_anchor) and not is_related_work:
+        return "project_decision"
+    if is_related_work:
+        return "related_work"
+    return "general_context"
+
+
+def select_project_plan_sources(sources: list[dict]) -> list[dict]:
+    """Only explicit project decisions/status evidence can answer project-plan questions."""
+    return [
+        {**source, "evidence_role": "project_decision"}
+        for source in sources
+        if _project_source_role(source) == "project_decision"
+    ]
 
 
 def _timestamp(value):
@@ -134,7 +193,7 @@ class ContextEngine:
                 found = await search_workspace_chunks(
                     workspace_id=workspace_id,
                     query=query or "workspace summary",
-                    limit=MAX_DOCUMENT_SOURCES,
+                    limit=MAX_DOCUMENT_SOURCES * 3 if operation == "project_plan_question" else MAX_DOCUMENT_SOURCES,
                     user=user,
                     max_candidates=MAX_DOCUMENT_CANDIDATES,
                     document_id=str(resolution.document["_id"]) if resolution.document else None,
@@ -142,6 +201,15 @@ class ContextEngine:
             except EmbeddingModelUnavailableError as exc:
                 raise HTTPException(status_code=503, detail="Workspace document retrieval is temporarily unavailable because the local embedding model is not ready.") from exc
             selected = found["results"]
+            if operation == "project_plan_question":
+                selected = [
+                    item for item in selected
+                    if _project_source_role({
+                        "source_type": "document",
+                        "title": item.get("filename") or "Workspace document",
+                        "text": item.get("text") or "",
+                    }) == "project_decision"
+                ]
             # Include adjacent passages for context, but keep the result bounded and
             # restricted to the same ready document records as semantic search.
             if selected:
@@ -176,10 +244,18 @@ class ContextEngine:
                     sources.append(source)
 
         query_tokens = {token for token in __import__("re").findall(r"[\w'-]{3,}", query.casefold())}
+        if operation == "project_plan_question":
+            query_tokens.update({
+                "project", "plan", "planned", "selected", "decision", "implementation",
+                "implemented", "progress", "completed", "roadmap", "agent", "agents",
+                "decided", "chosen", "include", "including", "component", "components",
+            })
         cursor = db.messages.find(
             {"workspace_id": workspace["_id"], "message_type": {"$ne": "private"}, **({"_id": {"$ne": exclude_message_id}} if exclude_message_id else {})},
             {"_id": 1, "sender_name": 1, "content": 1, "created_at": 1},
-        ).sort([("created_at", -1), ("_id", -1)]).limit(MAX_CHAT_SCAN)
+        ).sort([("created_at", -1), ("_id", -1)]).limit(
+            MAX_CHAT_SCAN * 2 if operation == "project_plan_question" else MAX_CHAT_SCAN
+        )
         chat = [message async for message in cursor]
         ranked = []
         for message in chat:
@@ -188,13 +264,38 @@ class ContextEngine:
             score = len(query_tokens & tokens) / max(len(query_tokens | tokens), 1)
             if not query_tokens or score > 0:
                 ranked.append((score, message, text))
-        ranked.sort(key=lambda row: (row[0], row[1].get("created_at") or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
+        if operation == "project_plan_question":
+            ranked.sort(key=lambda row: (
+                _project_source_role({
+                    "source_type": "chat_message",
+                    "title": row[1].get("sender_name") or "Workspace member",
+                    "text": row[2],
+                }) == "project_decision",
+                row[0],
+                row[1].get("created_at") or datetime.min.replace(tzinfo=timezone.utc),
+            ), reverse=True)
+        else:
+            ranked.sort(key=lambda row: (row[0], row[1].get("created_at") or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
         for score, message, text in ranked[:MAX_CHAT_SOURCES]:
             sources.append({
                 "citation_id": f"chat:{message['_id']}", "source_type": "chat_message", "source_id": str(message["_id"]),
                 "title": message.get("sender_name") or "Workspace member", "created_at": _timestamp(message.get("created_at")),
                 "score": round(score, 4), "text": text[:MAX_SOURCE_CHARS],
             })
+        if operation == "project_plan_question":
+            sources = select_project_plan_sources(sources)
+            if not sources:
+                message = (
+                    "I couldn't find an explicit project plan or implementation-status decision in this workspace. "
+                    "Research-paper related work can describe external frameworks, but it doesn't establish what this "
+                    "project selected or implemented. Share the project plan or a team decision and I can summarize it."
+                )
+                return {
+                    "sources": [], "document": resolution.document, "message": message,
+                    "status": "project_plan_not_found", "complete": False,
+                    "limitations": ["No authoritative project-plan source was found in this workspace."],
+                }
+
         bounded, total = [], 0
         for source in sources:
             remaining = MAX_TOTAL_CONTEXT_CHARS - total

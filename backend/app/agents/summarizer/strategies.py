@@ -6,6 +6,16 @@ from fastapi import HTTPException
 from app.agents.summarizer.schemas import SummaryIntent, SummaryOperation, SummaryOutput
 
 _WHOLE = re.compile(r"\b(entire|whole|complete|full)\b.{0,80}\b(document|file|paper|report|workspace)\b|\b(entire|whole|complete|full)\b.{0,80}\.(?:pdf|docx?|txt|md)\b|\b(document|file|paper|report)\b.{0,40}\b(entirely|in full|as a whole)\b", re.I)
+_PROJECT_PLAN = re.compile(
+    r"\b(?:our|this|the)\s+(?:collabai\s+)?(?:project|implementation|roadmap|system)\b|"
+    r"\b(?:planned|plan(?:ning)?|selected|decided|implement(?:ed|ing)?|in progress|completed)\b.{0,60}"
+    r"\b(?:project|implementation|agents?|components?|features?)\b|"
+    r"\b(?:which|what)\b.{0,100}\b(?:agents?|components?|features?)\b.{0,60}"
+    r"\b(?:include|including|selected|planned|implement(?:ed|ing)?)\b.{0,60}\b(?:project|implementation|roadmap)\b",
+    re.I,
+)
+
+
 def interpret_request(content: str) -> SummaryIntent:
     match = re.match(r"^\s*@summarizer(?:\s+|$)(.*)$", content, flags=re.I | re.S)
     if not match:
@@ -15,6 +25,12 @@ def interpret_request(content: str) -> SummaryIntent:
         question = "Summarize relevant workspace context."
     if _WHOLE.search(question):
         operation = SummaryOperation.WHOLE_DOCUMENT
+    elif _PROJECT_PLAN.search(question) and not re.search(
+        r"\b(?:related\s+work|literature\s+review|prior\s+work|what\s+(?:does|do)\s+(?:the\s+)?(?:paper|study|article)\s+(?:mention|discuss|describe))\b",
+        question,
+        re.I,
+    ):
+        operation = SummaryOperation.PROJECT_PLAN
     elif re.match(r"\s*(what|how|why|which|where|when|who|does|do|did|is|are|was|were)\b", question, re.I):
         operation = SummaryOperation.QUESTION
     else:

@@ -19,6 +19,14 @@ PROMPTS = {
         "Answer the user's specific question using only supplied evidence. Keep the response within the requested scope; "
         "separate source-supported facts from interpretation and say what is not established."
     ),
+    "project_plan_question": (
+        "Answer questions about this project's plan and implementation status only from explicit project decisions, "
+        "roadmaps, implementation notes, or workspace team decisions. Distinguish planned, in-progress, implemented, "
+        "and completed work exactly as the evidence states; do not infer status from a component merely being discussed. "
+        "Research-paper background, related-work sections, surveys, and lists of external frameworks are not evidence "
+        "that this project selected or implemented those items. If the supplied sources do not establish the project's "
+        "decision or status, say that authoritative project information is unavailable and ask for a plan or clarification."
+    ),
     "insufficient_evidence": (
         "The evidence is insufficient. State exactly what could not be established and ask for a more precise topic or source. "
         "Do not fill gaps with general knowledge."
@@ -30,6 +38,7 @@ def build_messages(intent: SummaryIntent, sources: list[dict], *, whole_document
     evidence = [{
         "source_id": source["citation_id"],
         "type": source["source_type"],
+        "evidence_role": source.get("evidence_role"),
         "title": source["title"],
         "page": source.get("page"),
         "text": source["text"],

@@ -7,6 +7,7 @@ class SummaryOperation(str, Enum):
     TOPIC = "topic_summary"
     WHOLE_DOCUMENT = "whole_document_summary"
     QUESTION = "question_focused_summary"
+    PROJECT_PLAN = "project_plan_question"
 
 
 class SummaryIntent(BaseModel):
