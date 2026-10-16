@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import Field
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -38,6 +39,11 @@ class Settings(BaseSettings):
 
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "openai/gpt-oss-120b"
+    SUMMARIZER_MAX_DOCUMENT_CHUNKS: int = Field(default=54, ge=1, le=120)
+    SUMMARIZER_CHUNKS_PER_SECTION: int = Field(default=3, ge=1, le=6)
+    SUMMARIZER_MAP_CONCURRENCY: int = Field(default=3, ge=1, le=5)
+    SUMMARIZER_DEADLINE_SECONDS: int = Field(default=150, ge=30, le=300)
+    SUMMARIZER_REDUCE_CONTEXT_CHARS: int = Field(default=16000, ge=4000, le=24000)
 
     model_config = SettingsConfigDict(
         env_file=Path(__file__).resolve().parents[2] / ".env",

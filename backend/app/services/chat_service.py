@@ -23,6 +23,10 @@ def serialize_message(message: dict) -> dict:
         "message_type": message.get("message_type", "user"),
         "agent_type": message.get("agent_type"),
         "sources": message.get("sources", []),
+        "assessment": message.get("assessment"),
+        "explanation": message.get("explanation"),
+        "coverage": message.get("coverage"),
+        "limitations": message.get("limitations", []),
     }
 
 
@@ -158,6 +162,10 @@ async def save_agent_message(
     *,
     agent_type: str,
     sources: list[dict],
+    assessment: str | None = None,
+    explanation: str | None = None,
+    coverage: str | None = None,
+    limitations: list[str] | None = None,
 ) -> dict:
     """Persist a server-authored message without attributing it to a user."""
     content = content.strip()
@@ -177,6 +185,10 @@ async def save_agent_message(
         "message_type": "agent",
         "agent_type": agent_type,
         "sources": sources,
+        "assessment": assessment,
+        "explanation": explanation,
+        "coverage": coverage,
+        "limitations": limitations or [],
     }
     result = await db.messages.insert_one(record)
     record["_id"] = result.inserted_id

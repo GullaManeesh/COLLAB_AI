@@ -315,6 +315,7 @@ async def search_workspace_chunks(
     limit: int,
     user: dict,
     max_candidates: int | None = None,
+    document_id: str | None = None,
 ) -> dict:
     """
     Semantic search across all embedded chunks within a workspace.
@@ -329,14 +330,19 @@ async def search_workspace_chunks(
 
     query_vector = await async_generate_embedding(query)
 
+    ready_query = {
+        "workspace_id": workspace["_id"],
+        "status": "ready",
+        "embedding_model": MODEL_ID,
+    }
+    if document_id is not None:
+        if not ObjectId.is_valid(document_id):
+            return {"query": query, "results": [], "total": 0}
+        ready_query["_id"] = ObjectId(document_id)
     ready_documents = [
         document["_id"]
         async for document in db.documents.find(
-            {
-                "workspace_id": workspace["_id"],
-                "status": "ready",
-                "embedding_model": MODEL_ID,
-            },
+            ready_query,
             {"_id": 1},
         )
     ]

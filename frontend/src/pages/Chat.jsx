@@ -530,6 +530,16 @@ export default function Chat() {
           messages.map((message) => {
             const isAgent = message.message_type === 'agent'
             const isMe = message.sender_id === user?.id
+            const assessmentLabel = {
+              well_supported: 'Well supported',
+              partially_supported: 'Partially supported',
+              insufficient_evidence: 'Insufficient evidence',
+            }[message.assessment]
+            const assessmentStyle = message.assessment === 'well_supported'
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+              : message.assessment === 'partially_supported'
+                ? 'border-amber-200 bg-amber-50 text-amber-800'
+                : 'border-[#E4E4E0] bg-[#F8F8F6] text-[#52525B]'
             const senderName = isAgent
               ? `@${(message.agent_type || message.sender_name || 'agent').replace(/^@/, '').toLowerCase()}`
               : isMe ? 'You' : message.sender_name
@@ -549,7 +559,7 @@ export default function Chat() {
                         <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#18181B] text-white">
                           <Bot className="h-4 w-4" />
                         </span>
-                        <span className="truncate rounded-md bg-[#18181B] px-2 py-1 text-xs font-bold text-white">{senderName}</span>
+                        <span className="truncate text-xs font-bold text-[#C2410C]">{senderName}</span>
                         <span className="rounded border border-[#E4E4E0] bg-white px-1.5 py-0.5 text-[10px] font-medium text-[#52525B]">Agent</span>
                       </>
                     ) : (
@@ -570,9 +580,33 @@ export default function Chat() {
                     }`}
                 >
                   {isAgent ? (
-                    <div className="chat-markdown w-full min-w-0 break-words select-text">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-                    </div>
+                    <>
+                      {assessmentLabel && (
+                        <div className="mb-3 flex flex-wrap items-start gap-2">
+                          <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${assessmentStyle}`}>
+                            {assessmentLabel}
+                          </span>
+                          {message.coverage && message.coverage !== 'unknown' && (
+                            <span className="inline-flex rounded-full border border-[#E4E4E0] bg-[#F8F8F6] px-2.5 py-1 text-[11px] text-[#52525B]">
+                              {message.coverage === 'complete' ? 'Complete document coverage' : 'Partial coverage'}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      <div className="chat-markdown w-full min-w-0 break-words select-text">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                      </div>
+                      {(message.explanation || message.limitations?.length > 0) && (
+                        <div className="mt-4 rounded-lg border border-[#E4E4E0] bg-[#F8F8F6] px-3 py-2.5 text-xs leading-relaxed text-[#52525B]">
+                          {message.explanation && <p>{message.explanation}</p>}
+                          {message.limitations?.length > 0 && (
+                            <ul className={`${message.explanation ? 'mt-1.5 ' : ''}list-inside list-disc space-y-1`}>
+                              {message.limitations.map((limitation, index) => <li key={`${index}-${limitation}`}>{limitation}</li>)}
+                            </ul>
+                          )}
+                        </div>
+                      )}
+                    </>
                   ) : agentCommandMatch ? (
                     <>
                       <span className={`font-semibold ${isMe ? 'text-orange-300' : 'text-orange-700'}`}>

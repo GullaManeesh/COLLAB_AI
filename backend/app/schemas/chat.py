@@ -20,6 +20,10 @@ class ChatMessageResponse(BaseModel):
     message_type: str = "user"
     agent_type: str | None = None
     sources: list[dict] = Field(default_factory=list)
+    assessment: str | None = None
+    explanation: str | None = None
+    coverage: str | None = None
+    limitations: list[str] = Field(default_factory=list)
 
 
 class ChatHistoryResponse(BaseModel):
