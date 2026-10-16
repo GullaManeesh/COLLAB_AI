@@ -11,6 +11,7 @@ import {
   LoaderCircle,
 } from 'lucide-react'
 import api from '../api/client'
+import DeleteDocumentModal from '../components/documents/DeleteDocumentModal'
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 const ALLOWED_EXTENSIONS = ['pdf', 'docx', 'txt', 'md']
@@ -54,7 +55,7 @@ export default function Documents() {
   const [selectedDoc, setSelectedDoc] = useState(null)
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
-  const [deletingId, setDeletingId] = useState(null)
+  const [documentToDelete, setDocumentToDelete] = useState(null)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
@@ -144,33 +145,22 @@ export default function Documents() {
     }
   }
 
-  async function deleteDocument(document) {
-    if (!document || deletingId) return
+  function requestDeleteDocument(document) {
+    if (!document || documentToDelete || uploading) return
+    setDocumentToDelete(document)
+  }
 
-    const confirmed = window.confirm(
-      `Delete "${document.filename}" and all its stored chunks?`,
+  function handleDocumentDeleted(document) {
+    setDocuments((current) =>
+      current.filter((doc) => doc.id !== document.id),
     )
-    if (!confirmed) return
-
-    setDeletingId(document.id)
-    setError('')
+    setSelectedDoc((current) =>
+      current?.id === document.id ? null : current,
+    )
+    setDocumentToDelete(null)
     setSuccess('')
-
-    try {
-      await api.delete(`${documentsUrl}/${document.id}`)
-
-      setDocuments((current) =>
-        current.filter((doc) => doc.id !== document.id),
-      )
-      setSelectedDoc((current) =>
-        current?.id === document.id ? null : current,
-      )
-      setSuccess(`Deleted ${document.filename}.`)
-    } catch (err) {
-      setError(getErrorMessage(err))
-    } finally {
-      setDeletingId(null)
-    }
+    setError('')
+    setSuccess(`Deleted ${document.filename}.`)
   }
 
   function handleDrop(event) {
@@ -354,20 +344,24 @@ export default function Documents() {
 
           <div className="border-t border-[#E4E4E0] p-4">
             <button
-              onClick={() => deleteDocument(selectedDoc)}
-              disabled={deletingId === selectedDoc.id || uploading}
+              onClick={() => requestDeleteDocument(selectedDoc)}
+              disabled={uploading}
               className="flex w-full items-center justify-center gap-2 rounded-xl border border-red-200 bg-white py-2.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
             >
-              {deletingId === selectedDoc.id ? (
-                <LoaderCircle className="h-4 w-4 animate-spin" />
-              ) : (
-                <Trash2 className="h-4 w-4" />
-              )}
+              <Trash2 className="h-4 w-4" />
               Delete document and chunks
             </button>
           </div>
         </aside>
       )}
+
+      <DeleteDocumentModal
+        isOpen={Boolean(documentToDelete)}
+        document={documentToDelete}
+        workspaceId={workspaceId}
+        onClose={() => setDocumentToDelete(null)}
+        onDeleted={handleDocumentDeleted}
+      />
     </div>
   )
 }
